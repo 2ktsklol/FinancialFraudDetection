@@ -27,13 +27,14 @@ from sklearn.metrics import (
 
 # Импорт функций предобработки из соседнего файла
 from preprocess_data import load_data, preprocess
+from config import TRANSACTIONS_PATH, LABELS_PATH
 
 # =============================================================================
 # 1. КОНФИГУРАЦИЯ
 # =============================================================================
 
-TRANSACTIONS_PATH = r'C:\data\Financial Transactions Dataset Analytics\original\transactions_data.csv'
-LABELS_PATH = r'C:\data\Financial Transactions Dataset Analytics\original\train_fraud_labels.json'
+TRANSACTIONS_PATH = TRANSACTIONS_PATH
+LABELS_PATH = LABELS_PATH
 
 TEST_SIZE = 0.2  # доля тестовой выборки
 RANDOM_STATE = 42  # фиксируем seed для воспроизводимости результатов
