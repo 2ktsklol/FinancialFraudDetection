@@ -1,0 +1,135 @@
+STEP 1] Загрузка и предобработка данных...
+[INFO] Транзакций загружено: 13305915
+[INFO] Столбцы: ['id', 'date', 'client_id', 'card_id', 'amount', 'use_chip', 'merchant_id', 'merchant_city', 'merchant_state', 'zip', 'mcc', 'errors']
+[INFO] Меток фрода загружено: 8914963
+[INFO] Строк после объединения: 8914963
+[INFO] Распределение классов:
+isFraud
+0    8901631
+1      13332
+Name: count, dtype: int64
+
+[INFO] Обнаружено возвратов (is_refund=1): 442779 (4.97%)
+[INFO] Предобработка завершена.
+[INFO] Итоговые признаки: ['amount', 'use_chip', 'merchant_city', 'merchant_state', 'zip', 'mcc', 'errors', 'isFraud', 'year', 'month', 'day', 'hour', 'dayofweek', 'is_refund']
+[INFO] Размер датасета: (8914963, 14)
+
+[INFO] Пропущенные значения:
+amount            0
+use_chip          0
+merchant_city     0
+merchant_state    0
+zip               0
+mcc               0
+errors            0
+isFraud           0
+year              0
+month             0
+day               0
+hour              0
+dayofweek         0
+is_refund         0
+dtype: int64
+
+[STEP 2] Разделение на X и y...
+
+[STEP 3] Разделение на train / test...
+[INFO] Train: 7131970 записей | Test: 1782993 записей
+[INFO] Доля фрода в train: 0.0015
+[INFO] Доля фрода в test:  0.0015
+
+[STEP 4] Обучение и оценка моделей...
+
+=======================================================
+  Isolation Forest
+=======================================================
+  Accuracy    : 0.9970
+  Precision   : 0.0075
+  Recall      : 0.0075
+  F1          : 0.0075
+  AUC         : 0.6319
+
+  Confusion Matrix:
+                            Actual 1 (Fraud)  Actual 0 (No Fraud)
+  Predicted 1 (Fraud)       20                  2636
+  Predicted 0 (No Fraud)    2646                1777691
+
+              precision    recall  f1-score   support
+
+           0       1.00      1.00      1.00   1780327
+           1       0.01      0.01      0.01      2666
+
+    accuracy                           1.00   1782993
+   macro avg       0.50      0.50      0.50   1782993
+weighted avg       1.00      1.00      1.00   1782993
+
+
+[INFO] Random Forest: кросс-валидация...
+[Parallel(n_jobs=4)]: Using backend LokyBackend with 4 concurrent workers.
+[Parallel(n_jobs=4)]: Done   5 out of   5 | elapsed:  5.3min finished
+[INFO] CV F1-score (среднее по 5 фолдам): 0.7257
+
+=======================================================
+  Random Forest
+=======================================================
+  Accuracy    : 0.9993
+  Precision   : 0.9603
+  Recall      : 0.5893
+  F1          : 0.7304
+  AUC         : 0.9407
+
+  Confusion Matrix:
+                            Actual 1 (Fraud)  Actual 0 (No Fraud)
+  Predicted 1 (Fraud)       1571                65
+  Predicted 0 (No Fraud)    1095                1780262
+
+              precision    recall  f1-score   support
+
+           0       1.00      1.00      1.00   1780327
+           1       0.96      0.59      0.73      2666
+
+    accuracy                           1.00   1782993
+   macro avg       0.98      0.79      0.87   1782993
+weighted avg       1.00      1.00      1.00   1782993
+
+
+[INFO] Logistic Regression: кросс-валидация...
+[INFO] CV F1-score (среднее по 5 фолдам): 0.0125
+
+=======================================================
+  Logistic Regression
+=======================================================
+  Accuracy    : 0.7837
+  Precision   : 0.0063
+  Recall      : 0.9197
+  F1          : 0.0126
+  AUC         : 0.9108
+
+  Confusion Matrix:
+                            Actual 1 (Fraud)  Actual 0 (No Fraud)
+  Predicted 1 (Fraud)       2452                385407
+  Predicted 0 (No Fraud)    214                 1394920
+
+              precision    recall  f1-score   support
+
+           0       1.00      0.78      0.88   1780327
+           1       0.01      0.92      0.01      2666
+
+    accuracy                           0.78   1782993
+   macro avg       0.50      0.85      0.45   1782993
+weighted avg       1.00      0.78      0.88   1782993
+
+
+[STEP 5] Сводная таблица результатов...
+
+=======================================================
+  СВОДНАЯ ТАБЛИЦА РЕЗУЛЬТАТОВ
+=======================================================
+                     Accuracy  Precision  Recall      F1     AUC
+Model
+Isolation Forest       0.9970     0.0075  0.0075  0.0075  0.6319
+Random Forest          0.9993     0.9603  0.5893  0.7304  0.9407
+Logistic Regression    0.7837     0.0063  0.9197  0.0126  0.9108
+=======================================================
+
+Process finished with exit code 0

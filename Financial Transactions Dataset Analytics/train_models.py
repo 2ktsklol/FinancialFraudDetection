@@ -96,13 +96,13 @@ def compute_metrics(y_true: np.ndarray,
         if metric != "Model":
             print(f"  {metric:<12}: {value:.4f}")
 
-    # Confusion matrix
+    # Confusion matrix (строки = Predicted, столбцы = Actual)
     cm = confusion_matrix(y_true, y_pred)
     tn, fp, fn, tp = cm.ravel()
     print(f"\n  Confusion Matrix:")
-    print(f"  {'':20} Predicted 0  Predicted 1")
-    print(f"  {'Actual 0 (No Fraud)':<20}  {tn:<12}  {fp}")
-    print(f"  {'Actual 1 (Fraud)':<20}  {fn:<12}  {tp}")
+    print(f"  {'':25} Actual 1 (Fraud)  Actual 0 (No Fraud)")
+    print(f"  {'Predicted 1 (Fraud)':<25} {tp:<18}  {fp}")
+    print(f"  {'Predicted 0 (No Fraud)':<25} {fn:<18}  {tn}")
 
     print(f"\n{classification_report(y_true, y_pred, zero_division=0)}")
 
@@ -162,15 +162,16 @@ def run_random_forest(X_train: pd.DataFrame,
         - Финальная оценка на отложенной тестовой выборке
     """
     model = RandomForestClassifier(
-        n_estimators=100,
+        n_estimators=20,
         class_weight="balanced",
-        random_state=RANDOM_STATE
+        random_state=RANDOM_STATE,
+        n_jobs=4
     )
 
     # Кросс-валидация на обучающей выборке
     print("\n[INFO] Random Forest: кросс-валидация...")
     cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
-    cv_probs = cross_val_predict(model, X_train, y_train, cv=cv, method="predict_proba")
+    cv_probs = cross_val_predict(model, X_train, y_train, cv=cv, method="predict_proba", n_jobs=4, verbose=2)
     cv_preds = np.argmax(cv_probs, axis=1)
     cv_f1 = f1_score(y_train, cv_preds, zero_division=0)
     print(f"[INFO] CV F1-score (среднее по {CV_FOLDS} фолдам): {cv_f1:.4f}")
@@ -282,7 +283,7 @@ if __name__ == "__main__":
     print("\n[STEP 4] Обучение и оценка моделей...")
     results = []
     results.append(run_isolation_forest(X_train, X_test, y_test))
-    # results.append(run_random_forest(X_train, X_test, y_train, y_test))
+    results.append(run_random_forest(X_train, X_test, y_train, y_test))
     results.append(run_logistic_regression(X_train, X_test, y_train, y_test))
 
     # --- Шаг 5: Сводная таблица ---
