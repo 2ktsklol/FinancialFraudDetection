@@ -3,6 +3,8 @@ import json
 import numpy as np
 from pathlib import Path
 
+from config import TRANSACTIONS_PATH, LABELS_PATH, OUTPUT_PATH
+
 
 # =============================================================================
 # 1. ЗАГРУЗКА ДАННЫХ
@@ -149,9 +151,9 @@ def save_processed(df: pd.DataFrame, output_path: str) -> None:
 # =============================================================================
 
 if __name__ == "__main__":
-    TRANSACTIONS_PATH = r'C:\data\Financial Transactions Dataset Analytics\original\transactions_data.csv'
-    LABELS_PATH = r'C:\data\Financial Transactions Dataset Analytics\original\train_fraud_labels.json'
-    OUTPUT_PATH = r'C:\data\Financial Transactions Dataset Analytics\original\transactions_processed.csv'
+    TRANSACTIONS_PATH = TRANSACTIONS_PATH
+    LABELS_PATH = LABELS_PATH
+    OUTPUT_PATH = OUTPUT_PATH
 
     # Шаг 1: Загрузка и объединение
     df_merged = load_data(TRANSACTIONS_PATH, LABELS_PATH)
