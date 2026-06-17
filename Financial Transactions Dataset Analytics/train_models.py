@@ -352,9 +352,9 @@ if __name__ == "__main__":
     df_summary = print_summary(results)
 
     # --- Шаг 5: Сохранение результатов ---
-    from config import RESULTS_DIR
+    from config import RESULT_DIR
     import os
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    out_path = f"{RESULTS_DIR}/stage3_results.csv"
+    os.makedirs(RESULT_DIR, exist_ok=True)
+    out_path = f"{RESULT_DIR}/stage3_results.csv"
     df_summary.to_csv(out_path)
     print(f"\n[INFO] Результаты сохранены: {out_path}")

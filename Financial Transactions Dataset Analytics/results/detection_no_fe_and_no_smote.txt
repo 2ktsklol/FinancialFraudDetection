@@ -1,4 +1,4 @@
-ФОЛДЫ = 3
+ФОЛДЫ = 5
 
 [STEP 1] Загрузка и предобработка данных...
 [STEP 1] Загрузка файлов...
@@ -27,11 +27,13 @@
 
 [MODEL] Logistic Regression
 
-[CV] Logistic Regression: TimeSeriesSplit (3 фолдов)...
-  Фолд 1: Precision=0.0082 Recall=0.8120 F1=0.0162 PR-AUC=0.0093
-  Фолд 2: Precision=0.0028 Recall=0.9296 F1=0.0055 PR-AUC=0.0022
-  Фолд 3: Precision=0.0040 Recall=0.8911 F1=0.0080 PR-AUC=0.0054
-  Среднее : Precision=0.0050 Recall=0.8776 F1=0.0099 PR-AUC=0.0056
+[CV] Logistic Regression: TimeSeriesSplit (5 фолдов)...
+  Фолд 1: Precision=0.0000 Recall=0.0000 F1=0.0000 PR-AUC=0.0036
+  Фолд 2: Precision=0.0106 Recall=0.8135 F1=0.0209 PR-AUC=0.0128
+  Фолд 3: Precision=0.0027 Recall=0.9331 F1=0.0053 PR-AUC=0.0023
+  Фолд 4: Precision=0.0054 Recall=0.8493 F1=0.0107 PR-AUC=0.0170
+  Фолд 5: Precision=0.0058 Recall=0.7557 F1=0.0115 PR-AUC=0.0054
+  Среднее : Precision=0.0049 Recall=0.6703 F1=0.0097 PR-AUC=0.0082
 
 ============================================================
   Logistic Regression
@@ -58,11 +60,13 @@ weighted avg       1.00      0.83      0.90    777339
 
 [MODEL] Random Forest
 
-[CV] Random Forest: TimeSeriesSplit (3 фолдов)...
-  Фолд 1: Precision=0.0432 Recall=0.0870 F1=0.0578 PR-AUC=0.0368
-  Фолд 2: Precision=0.1080 Recall=0.5777 F1=0.1819 PR-AUC=0.1194
-  Фолд 3: Precision=0.0081 Recall=0.1511 F1=0.0153 PR-AUC=0.0059
-  Среднее : Precision=0.0531 Recall=0.2719 F1=0.0850 PR-AUC=0.0540
+[CV] Random Forest: TimeSeriesSplit (5 фолдов)...
+  Фолд 1: Precision=0.0000 Recall=0.0000 F1=0.0000 PR-AUC=0.0965
+  Фолд 2: Precision=0.7368 Recall=0.0071 F1=0.0140 PR-AUC=0.0550
+  Фолд 3: Precision=0.0913 Recall=0.6205 F1=0.1591 PR-AUC=0.0999
+  Фолд 4: Precision=0.0585 Recall=0.7242 F1=0.1082 PR-AUC=0.1137
+  Фолд 5: Precision=0.0000 Recall=0.0000 F1=0.0000 PR-AUC=0.0056
+  Среднее : Precision=0.1773 Recall=0.2703 F1=0.0563 PR-AUC=0.0741
 
 ============================================================
   Random Forest
@@ -90,11 +94,13 @@ weighted avg       1.00      1.00      1.00    777339
 [MODEL] XGBoost
   scale_pos_weight = 678.7 (легит/фрод = 8125652/11972)
 
-[CV] XGBoost: TimeSeriesSplit (3 фолдов)...
-  Фолд 1: Precision=0.0332 Recall=0.7875 F1=0.0637 PR-AUC=0.3151
-  Фолд 2: Precision=0.0998 Recall=0.6645 F1=0.1736 PR-AUC=0.1906
-  Фолд 3: Precision=0.0041 Recall=0.2107 F1=0.0081 PR-AUC=0.0759
-  Среднее : Precision=0.0457 Recall=0.5542 F1=0.0818 PR-AUC=0.1939
+[CV] XGBoost: TimeSeriesSplit (5 фолдов)...
+  Фолд 1: Precision=0.2535 Recall=0.0383 F1=0.0665 PR-AUC=0.0934
+  Фолд 2: Precision=0.1925 Recall=0.1275 F1=0.1534 PR-AUC=0.1009
+  Фолд 3: Precision=0.0937 Recall=0.6189 F1=0.1627 PR-AUC=0.1584
+  Фолд 4: Precision=0.0298 Recall=0.9009 F1=0.0577 PR-AUC=0.4316
+  Фолд 5: Precision=1.0000 Recall=0.0033 F1=0.0066 PR-AUC=0.0195
+  Среднее : Precision=0.3139 Recall=0.3378 F1=0.0894 PR-AUC=0.1608
 
 ============================================================
   XGBoost
