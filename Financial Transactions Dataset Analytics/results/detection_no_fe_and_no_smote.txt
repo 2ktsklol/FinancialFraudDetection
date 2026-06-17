@@ -1,0 +1,130 @@
+ФОЛДЫ = 3
+
+[STEP 1] Загрузка и предобработка данных...
+[STEP 1] Загрузка файлов...
+  transactions : (13305915, 12)
+  users        : (2000, 14)
+  cards        : (6146, 13)
+  labels       : 8914963 записей
+
+  Итоговый датасет после JOIN: (8914963, 39)
+  Фрод: 13,332 (0.150%)
+
+[STEP 2] Предобработка...
+  Удалено столбцов: 13 -> ['id', 'client_id', 'card_id', 'merchant_id', 'card_client_id', 'merchant_city', 'mcc_description', 'user_address', 'card_card_number', 'card_cvv', 'errors', 'user_birth_year', 'user_birth_month']
+  Итоговые признаки (29): ['amount', 'use_chip', 'merchant_state', 'zip', 'mcc', 'is_fraud', 'user_current_age', 'user_retirement_age', 'user_gender', 'user_latitude', 'user_longitude', 'user_per_capita_income', 'user_yearly_income', 'user_total_debt', 'user_credit_score', 'user_num_credit_cards', 'card_card_brand', 'card_card_type', 'card_has_chip', 'card_num_cards_issued', 'card_credit_limit', 'card_year_pin_last_changed', 'card_card_on_dark_web', '_date_for_split', 'tx_year', 'tx_month', 'tx_day', 'card_expires_year', 'card_acct_open_year']
+
+  Пропущенные значения после предобработки:
+    Пропущенных значений нет.
+
+[STEP 3] Временно́е разбиение (test >= 2019)...
+  Train: 8,137,624 записей | фрод: 11,972 (0.147%)
+  Test : 777,339 записей | фрод: 1,360 (0.175%)
+
+  Признаки (27): ['amount', 'use_chip', 'merchant_state', 'zip', 'mcc', 'user_current_age', 'user_retirement_age', 'user_gender', 'user_latitude', 'user_longitude', 'user_per_capita_income', 'user_yearly_income', 'user_total_debt', 'user_credit_score', 'user_num_credit_cards', 'card_card_brand', 'card_card_type', 'card_has_chip', 'card_num_cards_issued', 'card_credit_limit', 'card_year_pin_last_changed', 'card_card_on_dark_web', 'tx_year', 'tx_month', 'tx_day', 'card_expires_year', 'card_acct_open_year']
+
+[STEP 3] Обучение и оценка моделей...
+
+[MODEL] Logistic Regression
+
+[CV] Logistic Regression: TimeSeriesSplit (3 фолдов)...
+  Фолд 1: Precision=0.0082 Recall=0.8120 F1=0.0162 PR-AUC=0.0093
+  Фолд 2: Precision=0.0028 Recall=0.9296 F1=0.0055 PR-AUC=0.0022
+  Фолд 3: Precision=0.0040 Recall=0.8911 F1=0.0080 PR-AUC=0.0054
+  Среднее : Precision=0.0050 Recall=0.8776 F1=0.0099 PR-AUC=0.0056
+
+============================================================
+  Logistic Regression
+============================================================
+  Precision : 0.0094
+  Recall    : 0.9250
+  F1-score  : 0.0185
+  PR-AUC    : 0.0115
+
+  Confusion Matrix:
+                               Predicted Fraud  Predicted Legit
+  Actual Fraud                 1258               102
+  Actual Legit                 133181             642798
+
+              precision    recall  f1-score   support
+
+           0       1.00      0.83      0.91    775979
+           1       0.01      0.93      0.02      1360
+
+    accuracy                           0.83    777339
+   macro avg       0.50      0.88      0.46    777339
+weighted avg       1.00      0.83      0.90    777339
+
+
+[MODEL] Random Forest
+
+[CV] Random Forest: TimeSeriesSplit (3 фолдов)...
+  Фолд 1: Precision=0.0432 Recall=0.0870 F1=0.0578 PR-AUC=0.0368
+  Фолд 2: Precision=0.1080 Recall=0.5777 F1=0.1819 PR-AUC=0.1194
+  Фолд 3: Precision=0.0081 Recall=0.1511 F1=0.0153 PR-AUC=0.0059
+  Среднее : Precision=0.0531 Recall=0.2719 F1=0.0850 PR-AUC=0.0540
+
+============================================================
+  Random Forest
+============================================================
+  Precision : 0.8477
+  Recall    : 0.9206
+  F1-score  : 0.8826
+  PR-AUC    : 0.7957
+
+  Confusion Matrix:
+                               Predicted Fraud  Predicted Legit
+  Actual Fraud                 1252               108
+  Actual Legit                 225                775754
+
+              precision    recall  f1-score   support
+
+           0       1.00      1.00      1.00    775979
+           1       0.85      0.92      0.88      1360
+
+    accuracy                           1.00    777339
+   macro avg       0.92      0.96      0.94    777339
+weighted avg       1.00      1.00      1.00    777339
+
+
+[MODEL] XGBoost
+  scale_pos_weight = 678.7 (легит/фрод = 8125652/11972)
+
+[CV] XGBoost: TimeSeriesSplit (3 фолдов)...
+  Фолд 1: Precision=0.0332 Recall=0.7875 F1=0.0637 PR-AUC=0.3151
+  Фолд 2: Precision=0.0998 Recall=0.6645 F1=0.1736 PR-AUC=0.1906
+  Фолд 3: Precision=0.0041 Recall=0.2107 F1=0.0081 PR-AUC=0.0759
+  Среднее : Precision=0.0457 Recall=0.5542 F1=0.0818 PR-AUC=0.1939
+
+============================================================
+  XGBoost
+============================================================
+  Precision : 0.8222
+  Recall    : 1.0000
+  F1-score  : 0.9025
+  PR-AUC    : 0.9538
+
+  Confusion Matrix:
+                               Predicted Fraud  Predicted Legit
+  Actual Fraud                 1360               0
+  Actual Legit                 294                775685
+
+              precision    recall  f1-score   support
+
+           0       1.00      1.00      1.00    775979
+           1       0.82      1.00      0.90      1360
+
+    accuracy                           1.00    777339
+   macro avg       0.91      1.00      0.95    777339
+weighted avg       1.00      1.00      1.00    777339
+
+
+============================================================
+  СВОДНАЯ ТАБЛИЦА — ЭТАП 3 (без FE, без SMOTE)
+============================================================
+                     Precision  Recall  F1-score  PR-AUC
+Model
+Logistic Regression     0.0094  0.9250    0.0185  0.0115
+Random Forest           0.8477  0.9206    0.8826  0.7957
+XGBoost                 0.8222  1.0000    0.9025  0.9538
+============================================================

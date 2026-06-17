@@ -5,4 +5,9 @@ MCC_PATH = r'C:\data\Financial Transactions Dataset Analytics\original\mcc_codes
 USERS_PATH = r'C:\data\Financial Transactions Dataset Analytics\original\users_data.csv'
 
 EDA_OUTPUT_PATH = r'C:\data\Financial Transactions Dataset Analytics\original\eda_ouput'
+
+DEFAULT_PREPROCESS_DATA = r'C:\data\Financial Transactions Dataset Analytics\original\default_preprocessed_data.csv'
+
 OUTPUT_PATH = r'C:\data\Financial Transactions Dataset Analytics\original\transactions_processed.csv'
+
+RESULT_DIR = r'C:\data\Financial Transactions Dataset Analytics\original\progonOne'
