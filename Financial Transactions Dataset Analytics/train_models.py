@@ -46,8 +46,8 @@ from default_preprocess_data import load_and_merge, preprocess, time_split
 # 1. КОНФИГУРАЦИЯ
 # =============================================================================
 
-RANDOM_STATE   = 42    # фиксируем seed для воспроизводимости
-CV_FOLDS       = 5     # количество фолдов TimeSeriesSplit
+RANDOM_STATE     = 42    # фиксируем seed для воспроизводимости
+CV_FOLDS         = 5     # количество фолдов TimeSeriesSplit
 TEST_CUTOFF_YEAR = 2019  # граница train/test по времени
 
 
@@ -133,8 +133,17 @@ def cv_report(model, X_train: np.ndarray, y_train: np.ndarray, model_name: str) 
         X_tr, X_val = X_train[tr_idx], X_train[val_idx]
         y_tr, y_val = y_train[tr_idx], y_train[val_idx]
 
+        # Статистика по фолду перед обучением
+        fraud_train = y_tr.sum()
+        fraud_val   = y_val.sum()
+        print(f"\n  Фолд {fold} | "
+              f"train: {len(y_tr):,} записей, фрод: {fraud_train:,} "
+              f"({fraud_train / len(y_tr) * 100:.3f}%) | "
+              f"val: {len(y_val):,} записей, фрод: {fraud_val:,} "
+              f"({fraud_val / len(y_val) * 100:.3f}%)")
+
         # Пропускаем фолды, где в val нет фрода (PR-AUC не определён)
-        if y_val.sum() == 0:
+        if fraud_val == 0:
             print(f"  Фолд {fold}: нет фрода в val — пропущен")
             continue
 
@@ -147,12 +156,12 @@ def cv_report(model, X_train: np.ndarray, y_train: np.ndarray, model_name: str) 
         f1s.append(f1_score(y_val, y_pred, zero_division=0))
         pr_aucs.append(average_precision_score(y_val, y_prob))
 
-        print(f"  Фолд {fold}: Precision={precisions[-1]:.4f} "
+        print(f"  Результат : Precision={precisions[-1]:.4f} "
               f"Recall={recalls[-1]:.4f} F1={f1s[-1]:.4f} "
               f"PR-AUC={pr_aucs[-1]:.4f}")
 
     if f1s:
-        print(f"  Среднее : Precision={np.mean(precisions):.4f} "
+        print(f"\n  Среднее : Precision={np.mean(precisions):.4f} "
               f"Recall={np.mean(recalls):.4f} F1={np.mean(f1s):.4f} "
               f"PR-AUC={np.mean(pr_aucs):.4f}")
 
@@ -185,7 +194,7 @@ def run_logistic_regression(
     model = LogisticRegression(
         solver="lbfgs",  # быстрее saga на больших данных
         max_iter=1000,
-        tol=1e-3,  # менее строгий критерий сходимости — быстрее
+        tol=1e-3,        # менее строгий критерий сходимости — быстрее
         class_weight="balanced",
         random_state=RANDOM_STATE,
     )
