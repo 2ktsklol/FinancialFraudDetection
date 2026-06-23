@@ -275,7 +275,7 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
 
 def time_split(
     df: pd.DataFrame,
-    test_cutoff_year: int = 2019,
+    test_cutoff_year: int = 2018,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
     """
     Разделяет данные на train и test по временно́му порогу.

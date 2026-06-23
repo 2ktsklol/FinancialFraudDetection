@@ -48,7 +48,7 @@ from default_preprocess_data import load_and_merge, preprocess, time_split
 
 RANDOM_STATE     = 42    # фиксируем seed для воспроизводимости
 CV_FOLDS         = 5     # количество фолдов TimeSeriesSplit
-TEST_CUTOFF_YEAR = 2019  # граница train/test по времени
+TEST_CUTOFF_YEAR = 2018  # граница train/test по времени
 
 
 # =============================================================================
@@ -108,7 +108,13 @@ def compute_metrics(
 # 3. КРОСС-ВАЛИДАЦИЯ НА TRAIN (TimeSeriesSplit)
 # =============================================================================
 
-def cv_report(model, X_train: np.ndarray, y_train: np.ndarray, model_name: str) -> None:
+def cv_report(
+    model,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    model_name: str,
+    dates_train: np.ndarray = None,
+) -> None:
     """
     Запускает TimeSeriesSplit кросс-валидацию на обучающей выборке
     и выводит средние Precision / Recall / F1 / PR-AUC по фолдам.
@@ -118,10 +124,13 @@ def cv_report(model, X_train: np.ndarray, y_train: np.ndarray, model_name: str) 
     Это соответствует логике «модель обучается на прошлом, предсказывает будущее».
 
     Args:
-        model      : sklearn-совместимый классификатор (уже инициализированный)
-        X_train    : матрица признаков обучающей выборки
-        y_train    : метки обучающей выборки
-        model_name : название модели для вывода
+        model        : sklearn-совместимый классификатор (уже инициализированный)
+        X_train      : матрица признаков обучающей выборки
+        y_train      : метки обучающей выборки
+        model_name   : название модели для вывода
+        dates_train  : массив дат (pd.Series или np.ndarray) в том же порядке,
+                       что и X_train; используется для отображения временных
+                       границ каждого фолда. Если None — даты не выводятся.
     """
     print(f"\n[CV] {model_name}: TimeSeriesSplit ({CV_FOLDS} фолдов)...")
 
@@ -141,6 +150,16 @@ def cv_report(model, X_train: np.ndarray, y_train: np.ndarray, model_name: str) 
               f"({fraud_train / len(y_tr) * 100:.3f}%) | "
               f"val: {len(y_val):,} записей, фрод: {fraud_val:,} "
               f"({fraud_val / len(y_val) * 100:.3f}%)")
+
+        # Временны́е границы фолда (если даты переданы)
+        if dates_train is not None:
+            dates = pd.Series(dates_train)
+            tr_dates  = dates.iloc[tr_idx]
+            val_dates = dates.iloc[val_idx]
+            print(f"           train: {tr_dates.min().date()} — {tr_dates.max().date()} | "
+                  f"val: {val_dates.min().date()} — {val_dates.max().date()}")
+        else:
+            print('Не вижу дату')
 
         # Пропускаем фолды, где в val нет фрода (PR-AUC не определён)
         if fraud_val == 0:
@@ -173,6 +192,7 @@ def cv_report(model, X_train: np.ndarray, y_train: np.ndarray, model_name: str) 
 def run_logistic_regression(
     X_train: np.ndarray, X_test: np.ndarray,
     y_train: np.ndarray, y_test: np.ndarray,
+    dates_train: np.ndarray = None,
 ) -> dict:
     """
     Logistic Regression — линейная baseline-модель.
@@ -200,7 +220,7 @@ def run_logistic_regression(
     )
 
     # Кросс-валидация на train
-    cv_report(model, X_tr_scaled, y_train, "Logistic Regression")
+    cv_report(model, X_tr_scaled, y_train, "Logistic Regression", dates_train)
 
     # Финальное обучение на полном train -> оценка на test
     model.fit(X_tr_scaled, y_train)
@@ -213,6 +233,7 @@ def run_logistic_regression(
 def run_random_forest(
     X_train: np.ndarray, X_test: np.ndarray,
     y_train: np.ndarray, y_test: np.ndarray,
+    dates_train: np.ndarray = None,
 ) -> dict:
     """
     Random Forest — ансамбль на бэггинге.
@@ -236,7 +257,7 @@ def run_random_forest(
     )
 
     # Кросс-валидация на train
-    cv_report(model, X_train, y_train, "Random Forest")
+    cv_report(model, X_train, y_train, "Random Forest", dates_train)
 
     # Финальное обучение на полном train -> оценка на test
     model.fit(X_train, y_train)
@@ -249,6 +270,7 @@ def run_random_forest(
 def run_xgboost(
     X_train: np.ndarray, X_test: np.ndarray,
     y_train: np.ndarray, y_test: np.ndarray,
+    dates_train: np.ndarray = None,
 ) -> dict:
     """
     XGBoost — ансамбль на градиентном бустинге.
@@ -285,7 +307,7 @@ def run_xgboost(
     )
 
     # Кросс-валидация на train
-    cv_report(model, X_train, y_train, "XGBoost")
+    cv_report(model, X_train, y_train, "XGBoost", dates_train)
 
     # Финальное обучение на полном train -> оценка на test
     model.fit(X_train, y_train)
@@ -342,7 +364,15 @@ if __name__ == "__main__":
         df_processed, test_cutoff_year=TEST_CUTOFF_YEAR
     )
 
-    # Переводим в numpy для совместимости с sklearn / XGBoost
+    # Извлекаем даты напрямую из df_processed по временно́му условию,
+    # пока _date_for_split ещё доступен
+    df_processed["_date_for_split"] = pd.to_datetime(df_processed["_date_for_split"])
+    train_mask = df_processed["_date_for_split"].dt.year < TEST_CUTOFF_YEAR
+    test_mask = df_processed["_date_for_split"].dt.year >= TEST_CUTOFF_YEAR
+
+    dates_train = df_processed.loc[train_mask, "_date_for_split"].values
+    dates_test = df_processed.loc[test_mask, "_date_for_split"].values
+
     X_train = X_train_df.values
     X_test  = X_test_df.values
     y_train = y_train.values
@@ -350,12 +380,19 @@ if __name__ == "__main__":
 
     print(f"\n  Признаки ({X_train_df.shape[1]}): {X_train_df.columns.tolist()}")
 
+    # Временны́е границы тестовой выборки
+    if dates_test is not None:
+        dates_test_s = pd.Series(pd.to_datetime(dates_test))
+        print(f"\n  Тестовая выборка: "
+              f"{dates_test_s.min().date()} — {dates_test_s.max().date()} "
+              f"({len(dates_test_s):,} записей)")
+
     # --- Шаг 3: Обучение и оценка ---
     print("\n[STEP 3] Обучение и оценка моделей...")
     results = []
-    results.append(run_logistic_regression(X_train, X_test, y_train, y_test))
-    results.append(run_random_forest(X_train, X_test, y_train, y_test))
-    results.append(run_xgboost(X_train, X_test, y_train, y_test))
+    results.append(run_logistic_regression(X_train, X_test, y_train, y_test, dates_train))
+    results.append(run_random_forest(X_train, X_test, y_train, y_test, dates_train))
+    results.append(run_xgboost(X_train, X_test, y_train, y_test, dates_train))
 
     # --- Шаг 4: Сводная таблица ---
     df_summary = print_summary(results)
