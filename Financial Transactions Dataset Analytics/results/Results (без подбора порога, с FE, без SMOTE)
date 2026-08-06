@@ -1,0 +1,189 @@
+[STEP 1] Загрузка данных...
+[STEP 1] Загрузка файлов...
+  transactions : (13305915, 12)
+  users        : (2000, 14)
+  cards        : (6146, 13)
+  labels       : 8914963 записей
+
+  Итоговый датасет после JOIN: (8914963, 39)
+  Фрод: 13,332 (0.150%)
+
+[STEP 2] Предобработка + Feature Engineering...
+  [FE] Добавлены признаки: hour, day_of_week, is_weekend, is_online, log1p_amount, is_small_amount, is_missing_geo
+  [FE] 'mcc' сохранён для построения mcc_risk_group после сплита
+  Признаки перед временным разбиением (36): ['amount', 'use_chip', 'merchant_state', 'zip', 'mcc', 'is_fraud', 'user_current_age', 'user_retirement_age', 'user_gender', 'user_latitude', 'user_longitude', 'user_per_capita_income', 'user_yearly_income', 'user_total_debt', 'user_credit_score', 'user_num_credit_cards', 'card_card_brand', 'card_card_type', 'card_has_chip', 'card_num_cards_issued', 'card_credit_limit', 'card_year_pin_last_changed', 'card_card_on_dark_web', '_date_for_split', 'tx_year', 'tx_month', 'tx_day', 'hour', 'day_of_week', 'is_weekend', 'log1p_amount', 'is_small_amount', 'card_expires_year', 'card_acct_open_year', 'is_missing_geo', 'is_online']
+
+[STEP 3] Временно́е разбиение (test >= 2018)...
+  Train: 7,203,025 записей | фрод: 10,343 (0.144%)
+  Test : 1,711,938 записей | фрод: 2,989 (0.175%)
+
+[STEP 3] Построение mcc_risk_group по train (3 группы)...
+  Построено групп риска: 3, fallback для новых категорий mcc: 1
+
+  Признаки (34): ['amount', 'use_chip', 'merchant_state', 'zip', 'user_current_age', 'user_retirement_age', 'user_gender', 'user_latitude', 'user_longitude', 'user_per_capita_income', 'user_yearly_income', 'user_total_debt', 'user_credit_score', 'user_num_credit_cards', 'card_card_brand', 'card_card_type', 'card_has_chip', 'card_num_cards_issued', 'card_credit_limit', 'card_year_pin_last_changed', 'card_card_on_dark_web', 'tx_year', 'tx_month', 'tx_day', 'hour', 'day_of_week', 'is_weekend', 'log1p_amount', 'is_small_amount', 'card_expires_year', 'card_acct_open_year', 'is_missing_geo', 'is_online', 'mcc_risk_group']
+
+  Тестовая выборка: 2018-01-01 — 2019-10-31 (1,711,938 записей)
+
+[STEP 4] Обучение и оценка моделей...
+
+[MODEL] Logistic Regression
+
+[CV] Logistic Regression: TimeSeriesSplit (5 фолдов)...
+
+  Фолд 1 | train: 1,200,505 записей, фрод: 2,610 (0.217%) | val: 1,200,504 записей, фрод: 923 (0.077%)
+           train: 2010-01-01 — 2011-06-07 | val: 2011-06-07 — 2012-10-19
+  Результат : Precision=0.0012 Recall=0.0065 F1=0.0020 PR-AUC=0.0045
+
+  Фолд 2 | train: 2,401,009 записей, фрод: 3,533 (0.147%) | val: 1,200,504 записей, фрод: 1,645 (0.137%)
+           train: 2010-01-01 — 2012-10-19 | val: 2012-10-19 — 2014-02-15
+  Результат : Precision=0.0097 Recall=0.8608 F1=0.0192 PR-AUC=0.0365
+
+  Фолд 3 | train: 3,601,513 записей, фрод: 5,178 (0.144%) | val: 1,200,504 записей, фрод: 828 (0.069%)
+           train: 2010-01-01 — 2014-02-15 | val: 2014-02-15 — 2015-06-07
+  Результат : Precision=0.0035 Recall=0.8913 F1=0.0070 PR-AUC=0.0192
+
+  Фолд 4 | train: 4,802,017 записей, фрод: 6,006 (0.125%) | val: 1,200,504 записей, фрод: 3,609 (0.301%)
+           train: 2010-01-01 — 2015-06-07 | val: 2015-06-07 — 2016-09-20
+  Результат : Precision=0.0254 Recall=0.8487 F1=0.0494 PR-AUC=0.0862
+
+  Фолд 5 | train: 6,002,521 записей, фрод: 9,615 (0.160%) | val: 1,200,504 записей, фрод: 728 (0.061%)
+           train: 2010-01-01 — 2016-09-20 | val: 2016-09-20 — 2017-12-31
+  Результат : Precision=0.0036 Recall=0.9148 F1=0.0072 PR-AUC=0.0233
+
+  Среднее : Precision=0.0087 Recall=0.7044 F1=0.0169 PR-AUC=0.0339
+
+============================================================
+  Logistic Regression
+============================================================
+  Precision : 0.0138
+  Recall    : 0.9940
+  F1-score  : 0.0272
+  PR-AUC    : 0.0675
+
+  Confusion Matrix:
+                               Predicted Fraud  Predicted Legit
+  Actual Fraud                 2971               18
+  Actual Legit                 212145             1496804
+
+              precision    recall  f1-score   support
+
+           0       1.00      0.88      0.93   1708949
+           1       0.01      0.99      0.03      2989
+
+    accuracy                           0.88   1711938
+   macro avg       0.51      0.93      0.48   1711938
+weighted avg       1.00      0.88      0.93   1711938
+
+
+[MODEL] Random Forest
+
+[CV] Random Forest: TimeSeriesSplit (5 фолдов)...
+
+  Фолд 1 | train: 1,200,505 записей, фрод: 2,610 (0.217%) | val: 1,200,504 записей, фрод: 923 (0.077%)
+           train: 2010-01-01 — 2011-06-07 | val: 2011-06-07 — 2012-10-19
+  Результат : Precision=0.0000 Recall=0.0000 F1=0.0000 PR-AUC=0.0076
+
+  Фолд 2 | train: 2,401,009 записей, фрод: 3,533 (0.147%) | val: 1,200,504 записей, фрод: 1,645 (0.137%)
+           train: 2010-01-01 — 2012-10-19 | val: 2012-10-19 — 2014-02-15
+  Результат : Precision=0.0293 Recall=0.1708 F1=0.0501 PR-AUC=0.0278
+
+  Фолд 3 | train: 3,601,513 записей, фрод: 5,178 (0.144%) | val: 1,200,504 записей, фрод: 828 (0.069%)
+           train: 2010-01-01 — 2014-02-15 | val: 2014-02-15 — 2015-06-07
+  Результат : Precision=0.0284 Recall=0.6787 F1=0.0546 PR-AUC=0.0301
+
+  Фолд 4 | train: 4,802,017 записей, фрод: 6,006 (0.125%) | val: 1,200,504 записей, фрод: 3,609 (0.301%)
+           train: 2010-01-01 — 2015-06-07 | val: 2015-06-07 — 2016-09-20
+  Результат : Precision=0.1058 Recall=0.6290 F1=0.1811 PR-AUC=0.1187
+
+  Фолд 5 | train: 6,002,521 записей, фрод: 9,615 (0.160%) | val: 1,200,504 записей, фрод: 728 (0.061%)
+           train: 2010-01-01 — 2016-09-20 | val: 2016-09-20 — 2017-12-31
+  Результат : Precision=0.0160 Recall=0.5701 F1=0.0312 PR-AUC=0.0295
+
+  Среднее : Precision=0.0359 Recall=0.4097 F1=0.0634 PR-AUC=0.0427
+
+============================================================
+  Random Forest
+============================================================
+  Precision : 1.0000
+  Recall    : 0.0211
+  F1-score  : 0.0413
+  PR-AUC    : 0.6173
+
+  Confusion Matrix:
+                               Predicted Fraud  Predicted Legit
+  Actual Fraud                 63                 2926
+  Actual Legit                 0                  1708949
+
+              precision    recall  f1-score   support
+
+           0       1.00      1.00      1.00   1708949
+           1       1.00      0.02      0.04      2989
+
+    accuracy                           1.00   1711938
+   macro avg       1.00      0.51      0.52   1711938
+weighted avg       1.00      1.00      1.00   1711938
+
+
+[MODEL] XGBoost
+  scale_pos_weight = 695.4 (легит/фрод = 7192682/10343)
+
+[CV] XGBoost: TimeSeriesSplit (5 фолдов)...
+
+  Фолд 1 | train: 1,200,505 записей, фрод: 2,610 (0.217%) | val: 1,200,504 записей, фрод: 923 (0.077%)
+           train: 2010-01-01 — 2011-06-07 | val: 2011-06-07 — 2012-10-19
+  Результат : Precision=0.0216 Recall=0.0054 F1=0.0087 PR-AUC=0.0083
+
+  Фолд 2 | train: 2,401,009 записей, фрод: 3,533 (0.147%) | val: 1,200,504 записей, фрод: 1,645 (0.137%)
+           train: 2010-01-01 — 2012-10-19 | val: 2012-10-19 — 2014-02-15
+  Результат : Precision=0.0193 Recall=0.2772 F1=0.0361 PR-AUC=0.0167
+
+  Фолд 3 | train: 3,601,513 записей, фрод: 5,178 (0.144%) | val: 1,200,504 записей, фрод: 828 (0.069%)
+           train: 2010-01-01 — 2014-02-15 | val: 2014-02-15 — 2015-06-07
+  Результат : Precision=0.0193 Recall=0.8345 F1=0.0377 PR-AUC=0.0425
+
+  Фолд 4 | train: 4,802,017 записей, фрод: 6,006 (0.125%) | val: 1,200,504 записей, фрод: 3,609 (0.301%)
+           train: 2010-01-01 — 2015-06-07 | val: 2015-06-07 — 2016-09-20
+  Результат : Precision=0.0788 Recall=0.7218 F1=0.1421 PR-AUC=0.1568
+
+  Фолд 5 | train: 6,002,521 записей, фрод: 9,615 (0.160%) | val: 1,200,504 записей, фрод: 728 (0.061%)
+           train: 2010-01-01 — 2016-09-20 | val: 2016-09-20 — 2017-12-31
+  Результат : Precision=0.0062 Recall=0.7294 F1=0.0123 PR-AUC=0.1003
+
+  Среднее : Precision=0.0290 Recall=0.5137 F1=0.0474 PR-AUC=0.0649
+
+============================================================
+  XGBoost
+============================================================
+  Precision : 0.9769
+  Recall    : 0.4814
+  F1-score  : 0.6450
+  PR-AUC    : 0.7938
+
+  Confusion Matrix:
+                               Predicted Fraud  Predicted Legit
+  Actual Fraud                 1439               1550
+  Actual Legit                 34                 1708915
+
+              precision    recall  f1-score   support
+
+           0       1.00      1.00      1.00   1708949
+           1       0.98      0.48      0.65      2989
+
+    accuracy                           1.00   1711938
+   macro avg       0.99      0.74      0.82   1711938
+weighted avg       1.00      1.00      1.00   1711938
+
+
+============================================================
+  СВОДНАЯ ТАБЛИЦА — ЭТАП 4 (с FE, без SMOTE)
+============================================================
+                     Precision  Recall  F1-score  PR-AUC
+Model
+Logistic Regression     0.0138  0.9940    0.0272  0.0675
+Random Forest           1.0000  0.0211    0.0413  0.6173
+XGBoost                 0.9769  0.4814    0.6450  0.7938
+============================================================
+
+[INFO] Результаты сохранены: C:\data\Financial Transactions Dataset Analytics\original\progonOne/stage4_results.csv
+
+Process finished with exit code 0
