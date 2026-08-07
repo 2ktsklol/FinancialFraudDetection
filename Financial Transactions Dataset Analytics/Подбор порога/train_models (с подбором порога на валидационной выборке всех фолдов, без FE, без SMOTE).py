@@ -32,33 +32,18 @@ train_stage3.py
 
     Порог подбирается НЕ на тестовой выборке (это было бы утечкой -- порог
     "подсматривал" бы в метки, по которым его же и оценивают), а на
-    предсказаниях ПОСЛЕДНЕГО фолда TimeSeriesSplit кросс-валидации на train:
+    OOF-предсказаниях (out-of-fold) кросс-валидации TimeSeriesSplit на train:
         1. Train разбивается на 5 фолдов TimeSeriesSplit.
         2. На каждом фолде модель обучается на "прошлом" и предсказывает
            вероятности на "будущем" (val), которое не видела при обучении.
-        3. Для подбора порога используются предсказания ТОЛЬКО последнего
-           (5-го) фолда -- он обучен на наибольшем объёме train (~6.0 млн
-           записей из 7.2 млн), то есть максимально близок по объёму
-           обучающих данных к финальной модели (обучается на всех 7.2 млн).
-           Более ранние фолды (1-4) обучены на существенно меньшем объёме
-           и хуже откалиброваны -- их включение в подбор порога исказило бы
-           результат в сторону поведения слабых моделей (см. обсуждение
-           ниже "Почему не агрегированный OOF по всем фолдам").
-        4. На предсказаниях последнего фолда строится PR-кривая и
-           подбирается порог, максимизирующий F1.
+        3. Все val-предсказания по всем фолдам собираются в единый набор
+           OOF-предсказаний (каждая train-запись, кроме самого первого
+           тренировочного блока, предсказана моделью, которая её не видела).
+        4. На этом OOF-наборе строится PR-кривая и подбирается порог,
+           максимизирующий F1.
         5. Модель заново обучается на всём train, и уже готовый
            зафиксированный порог применяется к test -- тест НЕ участвует
            в подборе порога, только в финальной оценке.
-
-    Почему не агрегированный OOF по всем фолдам (предыдущая версия):
-        Более ранняя версия этого кода агрегировала предсказания со ВСЕХ
-        5 фолдов. На практике это дало пороги, кардинально завышенные
-        относительно того, что подошло бы финальной модели (например,
-        0.97 для XGBoost) -- потому что итоговый оптимум подстраивался
-        под шумные, хуже откалиброванные модели ранних фолдов (обученных
-        на 1.2-3.6 млн записей), а не под финальную модель (7.2 млн).
-        Использование только последнего фолда устраняет эту проблему,
-        сохраняя главное требование -- порог не подбирается на тесте.
 
     Порог для каждой модели подбирается один раз -- на baseline-данных
     Этапа 3 -- и фиксируется. В Этапах 4-6 (FE, SMOTE, FE+SMOTE) для той
@@ -95,11 +80,11 @@ from default_preprocess_data import load_and_merge, preprocess, time_split
 RANDOM_STATE       = 42    # фиксируем seed для воспроизводимости
 CV_FOLDS           = 5     # количество фолдов TimeSeriesSplit
 TEST_CUTOFF_YEAR   = 2018  # граница train/test по времени
-THRESHOLDS_PATH    = "results/optimal_thresholds.json"  # куда сохраняем/откуда читаем пороги
+THRESHOLDS_PATH    = "../results/Подбор порога/optimal_thresholds.json"  # куда сохраняем/откуда читаем пороги
 
 
 # =============================================================================
-# 2. ПОДБОР ПОРОГА ПО ПРЕДСКАЗАНИЯМ ПОСЛЕДНЕГО ФОЛДА
+# 2. ПОДБОР ПОРОГА ПО OOF-ПРЕДСКАЗАНИЯМ
 # =============================================================================
 
 def find_optimal_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
@@ -107,16 +92,16 @@ def find_optimal_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
     Находит порог классификации, максимизирующий F1, по PR-кривой.
 
     Args:
-        y_true : истинные метки последнего фолда кросс-валидации
-        y_prob : предсказанные вероятности класса 1 последнего фолда
+        y_true : истинные метки (OOF, из кросс-валидации)
+        y_prob : предсказанные вероятности класса 1 (OOF)
 
     Returns:
         Оптимальный порог. Если данных недостаточно для расчёта --
         возвращает 0.5 (дефолт) с предупреждением.
     """
     if len(y_true) == 0 or y_true.sum() == 0:
-        print("  [WARN] Недостаточно данных с фродом в последнем фолде для "
-              "подбора порога, используется 0.5")
+        print("  [WARN] Недостаточно OOF-данных с фродом для подбора порога, "
+              "используется 0.5")
         return 0.5
 
     precisions_c, recalls_c, thresholds = precision_recall_curve(y_true, y_prob)
@@ -162,11 +147,10 @@ def compute_metrics(
     Вычисляет и печатает метрики на test при двух порогах:
 
         1) 0.5           -- дефолтный порог (справочно)
-        2) cv_threshold  -- порог, подобранный по предсказаниям последнего
-                             (наибольшего по объёму) фолда кросс-валидации
-                             на train (см. docstring модуля). Именно эти
-                             метрики -- основные для сравнения моделей и
-                             этапов исследования.
+        2) cv_threshold  -- порог, подобранный по OOF-предсказаниям
+                             кросс-валидации на train (см. docstring модуля).
+                             Именно эти метрики -- основные для сравнения
+                             моделей и этапов исследования.
 
     PR-AUC не зависит от порога и вычисляется один раз.
 
@@ -226,7 +210,7 @@ def compute_metrics(
 
 
 # =============================================================================
-# 4. КРОСС-ВАЛИДАЦИЯ НА TRAIN (TimeSeriesSplit) + ПРЕДСКАЗАНИЯ ПОСЛЕДНЕГО ФОЛДА
+# 4. КРОСС-ВАЛИДАЦИЯ НА TRAIN (TimeSeriesSplit) + СБОР OOF-ПРЕДСКАЗАНИЙ
 # =============================================================================
 
 def cv_report(
@@ -238,9 +222,14 @@ def cv_report(
 ) -> tuple:
     """
     Запускает TimeSeriesSplit кросс-валидацию на обучающей выборке,
-    выводит метрики по фолдам (при пороге 0.5, справочно) и отдельно
-    сохраняет предсказания ПОСЛЕДНЕГО (5-го) фолда -- они используются
-    дальше для подбора порога по F1 (см. обоснование в docstring модуля).
+    выводит метрики по фолдам (при пороге 0.5, справочно) и параллельно
+    собирает OOF-предсказания (y_true, y_prob) со всех валидационных
+    фолдов -- они используются дальше для подбора порога по F1.
+
+    Важно: OOF-предсказания собираются даже для фолдов, где в val нет
+    фрода (легитимные примеры тоже нужны для корректного построения
+    PR-кривой) -- пропускается только вывод метрик Precision/Recall/F1
+    по такому фолду (там они неопределены).
 
     Первый тренировочный блок (данные до первого val-фолда) никогда не
     попадает в val ни на одном фолде TimeSeriesSplit -- это особенность
@@ -256,16 +245,15 @@ def cv_report(
                        каждого фолда. Если None -- даты не выводятся.
 
     Returns:
-        (last_fold_true, last_fold_prob) -- истинные метки и предсказанные
-        вероятности последнего (наибольшего по объёму) фолда, используются
-        для подбора порога классификации.
+        (oof_true, oof_prob) -- объединённые по всем фолдам массивы
+        истинных меток и предсказанных вероятностей.
     """
     print(f"\n[CV] {model_name}: TimeSeriesSplit ({CV_FOLDS} фолдов)...")
 
     tscv = TimeSeriesSplit(n_splits=CV_FOLDS)
 
     precisions, recalls, f1s, pr_aucs = [], [], [], []
-    last_fold_true, last_fold_prob = np.array([]), np.array([])
+    oof_true_parts, oof_prob_parts = [], []
 
     for fold, (tr_idx, val_idx) in enumerate(tscv.split(X_train), 1):
         X_tr, X_val = X_train[tr_idx], X_train[val_idx]
@@ -290,14 +278,13 @@ def cv_report(
         y_pred = model.predict(X_val)
         y_prob = model.predict_proba(X_val)[:, 1]
 
-        # Сохраняем предсказания последнего фолда для подбора порога.
-        # На каждой итерации перезаписываем -- после цикла в переменных
-        # останутся данные именно 5-го (последнего) фолда.
-        last_fold_true, last_fold_prob = y_val, y_prob
+        # Собираем OOF-предсказания независимо от наличия фрода в фолде
+        oof_true_parts.append(y_val)
+        oof_prob_parts.append(y_prob)
 
         if fraud_val == 0:
             print(f"  Фолд {fold}: нет фрода в val — метрики не показательны, "
-                  f"пропущены")
+                  f"пропущены (но предсказания учтены в OOF)")
             continue
 
         precisions.append(precision_score(y_val, y_pred, zero_division=0))
@@ -314,11 +301,10 @@ def cv_report(
               f"Recall={np.mean(recalls):.4f} F1={np.mean(f1s):.4f} "
               f"PR-AUC={np.mean(pr_aucs):.4f}")
 
-    print(f"\n  [INFO] Для подбора порога используются предсказания "
-          f"последнего фолда ({len(last_fold_true):,} записей, "
-          f"фрод: {int(last_fold_true.sum()):,})")
+    oof_true = np.concatenate(oof_true_parts) if oof_true_parts else np.array([])
+    oof_prob = np.concatenate(oof_prob_parts) if oof_prob_parts else np.array([])
 
-    return last_fold_true, last_fold_prob
+    return oof_true, oof_prob
 
 
 # =============================================================================
@@ -354,14 +340,14 @@ def run_logistic_regression(
         random_state=RANDOM_STATE,
     )
 
-    last_fold_true, last_fold_prob = cv_report(model, X_tr_scaled, y_train, "Logistic Regression", dates_train)
+    oof_true, oof_prob = cv_report(model, X_tr_scaled, y_train, "Logistic Regression", dates_train)
 
     if fixed_threshold is not None:
         threshold = fixed_threshold
         print(f"\n  [INFO] Используется зафиксированный ранее порог: {threshold:.4f}")
     else:
-        threshold = find_optimal_threshold(last_fold_true, last_fold_prob)
-        print(f"\n  [INFO] Порог подобран по последнему фолду CV: {threshold:.4f}")
+        threshold = find_optimal_threshold(oof_true, oof_prob)
+        print(f"\n  [INFO] Порог подобран по OOF-предсказаниям CV: {threshold:.4f}")
 
     model.fit(X_tr_scaled, y_train)
     y_prob = model.predict_proba(X_te_scaled)[:, 1]
@@ -386,14 +372,14 @@ def run_random_forest(
         n_jobs=-1,
     )
 
-    last_fold_true, last_fold_prob = cv_report(model, X_train, y_train, "Random Forest", dates_train)
+    oof_true, oof_prob = cv_report(model, X_train, y_train, "Random Forest", dates_train)
 
     if fixed_threshold is not None:
         threshold = fixed_threshold
         print(f"\n  [INFO] Используется зафиксированный ранее порог: {threshold:.4f}")
     else:
-        threshold = find_optimal_threshold(last_fold_true, last_fold_prob)
-        print(f"\n  [INFO] Порог подобран по последнему фолду CV: {threshold:.4f}")
+        threshold = find_optimal_threshold(oof_true, oof_prob)
+        print(f"\n  [INFO] Порог подобран по OOF-предсказаниям CV: {threshold:.4f}")
 
     model.fit(X_train, y_train)
     y_prob = model.predict_proba(X_test)[:, 1]
@@ -427,14 +413,14 @@ def run_xgboost(
         verbosity=0,
     )
 
-    last_fold_true, last_fold_prob = cv_report(model, X_train, y_train, "XGBoost", dates_train)
+    oof_true, oof_prob = cv_report(model, X_train, y_train, "XGBoost", dates_train)
 
     if fixed_threshold is not None:
         threshold = fixed_threshold
         print(f"\n  [INFO] Используется зафиксированный ранее порог: {threshold:.4f}")
     else:
-        threshold = find_optimal_threshold(last_fold_true, last_fold_prob)
-        print(f"\n  [INFO] Порог подобран по последнему фолду CV: {threshold:.4f}")
+        threshold = find_optimal_threshold(oof_true, oof_prob)
+        print(f"\n  [INFO] Порог подобран по OOF-предсказаниям CV: {threshold:.4f}")
 
     model.fit(X_train, y_train)
     y_prob = model.predict_proba(X_test)[:, 1]
