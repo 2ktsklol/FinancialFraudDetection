@@ -266,6 +266,10 @@ def cv_report(model_factory, X_train, y_train, model_name, dates_train=None):
 # 5. МОДЕЛИ
 # =============================================================================
 
+# =============================================================================
+# 5. МОДЕЛИ
+# =============================================================================
+
 def run_logistic_regression(X_train, X_test, y_train, y_test, dates_train=None) -> dict:
     print("\n[MODEL] Logistic Regression")
 
