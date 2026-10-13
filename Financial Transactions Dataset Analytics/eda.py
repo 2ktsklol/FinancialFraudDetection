@@ -60,10 +60,17 @@ EMV_SHIFT_DATE = pd.Timestamp("2015-10-01")
 USER_MONEY_COLS = ["user_per_capita_income", "user_yearly_income", "user_total_debt"]
 CARD_MONEY_COLS = ["card_credit_limit"]
 
-# Минимальное число транзакций в категории, чтобы показывать её fraud rate на
-# графиках: при меньшем n оценка доли слишком шумная (например, 60% на 100
-# транзакциях). Полная таблица по всем категориям сохраняется в CSV.
-MIN_CATEGORY_N = 300
+# Категории с n меньше этого порога НЕ скрываются с графика fraud rate по
+# категориям, а помечаются звёздочкой (их доверительный интервал шире).
+# Скрывать по n нельзя: именно в малых категориях могут быть самые сильные
+# сигналы (например, Cruise Lines: n=276, из них 165 фрод, 59.8%), а
+# неопределённость уже показана доверительным интервалом.
+SMALL_N_MARK = 300
+
+# Минимум транзакций в категории для графика ДОЛИ ТРАФИКА по месяцам
+# (mcc_risk_over_time): при ~2 транзакциях в месяц месячная доля — чистый шум.
+# Это ограничение именно для помесячной динамики, не для оценки fraud rate.
+MIN_N_FOR_MONTHLY_SHARE = 300
 
 
 # =============================================================================
@@ -390,11 +397,14 @@ def categorical_fraud_rates(df: pd.DataFrame) -> None:
     """
     Доля фрода по категориальным признакам.
 
-    На графике показываются только категории с n >= MIN_CATEGORY_N, для каждой
-    указаны n (в подписи оси) и 95% доверительный интервал Уилсона (усы).
-    Это защищает от вывода вроде "категория с 60% фрода", построенного на
-    нескольких десятках транзакций. Таблица по ВСЕМ категориям (включая
-    скрытые с графика) сохраняется в categorical_fraud_rates.csv.
+    Для каждой категории указаны n (в подписи оси) и 95% доверительный интервал
+    Уилсона (усы). Категории НЕ отфильтровываются по n: показываются топ-15,
+    отсортированные по НИЖНЕЙ границе доверительного интервала. Такая сортировка
+    сама защищает от шума: категория с малым n и случайно высокой долей уйдёт
+    вниз из-за широкого интервала, а категория с малым n, но убедительным
+    сигналом (интервал далеко выше базовой доли) останется наверху.
+    Категории с n < SMALL_N_MARK помечены звёздочкой.
+    Таблица по ВСЕМ категориям сохраняется в categorical_fraud_rates.csv.
     """
     print("\n[STEP 8] Фрод по категориальным признакам...")
 
@@ -424,39 +434,25 @@ def categorical_fraud_rates(df: pd.DataFrame) -> None:
         )
         stats["fraud_rate"] = stats["fraud"] / stats["n"]
         stats["ci_low"], stats["ci_high"] = wilson_ci(stats["fraud"], stats["n"])
-        stats["shown"] = stats["n"] >= MIN_CATEGORY_N
+        stats["small_n"] = stats["n"] < SMALL_N_MARK
 
-        # Полная таблица (в процентах) — для текста работы и проверки скрытых категорий
+        # Полная таблица (в процентах) — для текста работы
         out = stats.copy()
         out.insert(0, "feature", col)
         for c in ("fraud_rate", "ci_low", "ci_high"):
             out[f"{c}_pct"] = out.pop(c) * 100
         all_stats.append(out)
 
-        # Сообщаем, что скрыто с графика (и почему)
-        hidden = stats[~stats["shown"]].sort_values("fraud_rate", ascending=False)
-        if len(hidden):
-            top_hidden = ", ".join(
-                f"{r.category} (n={r.n:,}, {r.fraud_rate*100:.1f}%)"
-                for r in hidden.head(3).itertuples()
-            )
-            print(f"  {col}: скрыто {len(hidden)} категорий с n < {MIN_CATEGORY_N}; "
-                  f"с наибольшим fraud rate: {top_hidden}")
-
-        # Топ-15 по fraud rate среди категорий с достаточным n
-        shown = (
-            stats[stats["shown"]]
-            .sort_values("fraud_rate", ascending=True)
-            .tail(15)
-        )
-        if shown.empty:
-            axes[i].set_visible(False)
-            continue
+        # Топ-15 по нижней границе доверительного интервала (без фильтра по n)
+        shown = stats.sort_values("ci_low", ascending=True).tail(15)
 
         rate = shown["fraud_rate"].to_numpy() * 100
         lo   = shown["ci_low"].to_numpy() * 100
         hi   = shown["ci_high"].to_numpy() * 100
-        labels = [f"{c}  (n={n:,})" for c, n in zip(shown["category"], shown["n"])]
+        labels = [
+            f"{c}{'*' if s else ''}  (n={n:,})"
+            for c, n, s in zip(shown["category"], shown["n"], shown["small_n"])
+        ]
 
         axes[i].barh(labels, rate, xerr=[rate - lo, hi - rate],
                      color=PALETTE["fraud"], alpha=0.8,
@@ -474,7 +470,8 @@ def categorical_fraud_rates(df: pd.DataFrame) -> None:
         axes[j].set_visible(False)
 
     plt.suptitle(f"Fraud rate by categorical features "
-                 f"(категории с n ≥ {MIN_CATEGORY_N})", fontsize=13, y=1.01)
+                 f"(топ-15 по нижней границе 95% CI; * — категория с n < {SMALL_N_MARK})",
+                 fontsize=13, y=1.01)
     plt.tight_layout()
     plt.savefig(OUTPUT_DIR / "categorical_fraud_rates.png", bbox_inches="tight")
     plt.close()
@@ -661,7 +658,7 @@ def payment_method_over_time(df: pd.DataFrame) -> None:
 # 12. ДИНАМИКА MCC-КАТЕГОРИЙ ВЫСОКОГО РИСКА ВО ВРЕМЕНИ
 # =============================================================================
 
-def mcc_risk_over_time(df: pd.DataFrame, top_n: int = 6, min_n: int = MIN_CATEGORY_N) -> None:
+def mcc_risk_over_time(df: pd.DataFrame, top_n: int = 6, min_n: int = MIN_N_FOR_MONTHLY_SHARE) -> None:
     """
     Доля транзакций по MCC-категориям с наивысшим fraud rate (из
     categorical_fraud_rates) — динамика во времени.
