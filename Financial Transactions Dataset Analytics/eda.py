@@ -737,10 +737,89 @@ def mcc_risk_over_time(df: pd.DataFrame, top_n: int = 6, min_n: int = MIN_N_FOR_
 
 
 # =============================================================================
-# 13. ОБЪЁМ ТРАНЗАКЦИЙ И ФРОД ПО МЕСЯЦАМ (ПРОВЕРКА «НУЛЕВЫХ» МЕСЯЦЕВ)
+# ОБЩИЕ ПОМОЩНИКИ ДЛЯ ШАГОВ 13–16
 # =============================================================================
 
 ZERO_MONTH_COLOR = "#9A9A9A"   # заливка месяцев без выявленного фрода
+
+# Граница train/test из экспериментальной части (временной сплит)
+TEST_START_DATE = pd.Timestamp("2018-01-01")
+
+# Порог «категория заметно рискованнее среднего»: фрода в категории
+# больше, чем ожидалось бы при средней доле по всем транзакциям, в LIFT_THRESHOLD раз
+LIFT_THRESHOLD = 2.0
+
+# Стековый график по MCC: первые 7 слотов проверенной категориальной палитры
+# (порядок важен — соседние цвета различимы и при дальтонизме); остальное — серый.
+MCC_STACK_TOP_N = 7
+MCC_STACK_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6"]
+MCC_OTHER_COLOR = "#b8b8b4"
+MCC_OTHER_LABEL = "Остальные категории"
+
+# Доли по месяцам считаются только для месяцев, где фрода не меньше этого числа
+# (при 1–3 случаях долевая структура — шум)
+MIN_FRAUD_FOR_SHARE = 10
+
+
+def _contiguous_blocks(periods) -> list:
+    """Непрерывные блоки подряд идущих месяцев: список (начало, конец) в Period."""
+    blocks = []
+    if len(periods) == 0:
+        return blocks
+    start = prev = periods[0]
+    for p in periods[1:]:
+        if (p - prev).n != 1:
+            blocks.append((start, prev))
+            start = p
+        prev = p
+    blocks.append((start, prev))
+    return blocks
+
+
+def _shade_blocks(axes, blocks) -> None:
+    """Серая заливка блоков месяцев на всех осях."""
+    for s, e in blocks:
+        x0 = s.to_timestamp() - pd.Timedelta(days=15)
+        x1 = e.to_timestamp() + pd.Timedelta(days=15)
+        for ax in axes:
+            ax.axvspan(x0, x1, color=ZERO_MONTH_COLOR, alpha=0.25, linewidth=0, zorder=0)
+
+
+def _annotate_no_overlap(ax, points, fontsize: float = 8.5) -> None:
+    """
+    Подписи точек без пересечений друг с другом и без выхода за пределы осей.
+    points — список (x, y, текст) в порядке важности. Подпись, для которой
+    не нашлось свободного места, пропускается.
+    """
+    fig = ax.figure
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    axbox = ax.get_window_extent(renderer)
+    placed = []
+    candidates = [(8, 6, "left"), (8, -12, "left"), (-8, 6, "right"), (-8, -12, "right"),
+                  (8, 20, "left"), (-8, 20, "right"), (8, -26, "left"), (-8, -26, "right")]
+    for x, y, text in points:
+        for dx, dy, ha in candidates:
+            ann = ax.annotate(text, (x, y), xytext=(dx, dy), textcoords="offset points",
+                              fontsize=fontsize, ha=ha, color="#222222")
+            bb = ann.get_window_extent(renderer).expanded(1.02, 1.1)
+            inside = (axbox.x0 <= bb.x0 and bb.x1 <= axbox.x1
+                      and axbox.y0 <= bb.y0 and bb.y1 <= axbox.y1)
+            if inside and not any(bb.overlaps(p) for p in placed):
+                placed.append(bb)
+                break
+            ann.remove()
+
+
+def _short(text: str, width: int = 34) -> str:
+    """Сокращает длинное название категории для подписи на графике."""
+    text = str(text).replace(" - Musical Instruments", "")
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+# =============================================================================
+# 13. ОБЪЁМ ТРАНЗАКЦИЙ И ФРОД ПО МЕСЯЦАМ (ПРОВЕРКА «НУЛЕВЫХ» МЕСЯЦЕВ)
+# =============================================================================
 
 
 def volume_vs_fraud_over_time(df: pd.DataFrame) -> None:
@@ -773,16 +852,7 @@ def volume_vs_fraud_over_time(df: pd.DataFrame) -> None:
 
     # Непрерывные блоки нулевых месяцев
     zero_idx = monthly.index[monthly["zero_fraud"]]
-    blocks = []
-    if len(zero_idx):
-        periods = zero_idx.to_period("M")
-        start = prev = periods[0]
-        for p in periods[1:]:
-            if (p - prev).n != 1:
-                blocks.append((start, prev))
-                start = p
-            prev = p
-        blocks.append((start, prev))
+    blocks = _contiguous_blocks(zero_idx.to_period("M"))
 
     rows = []
     for s, e in blocks:
@@ -827,11 +897,7 @@ def volume_vs_fraud_over_time(df: pd.DataFrame) -> None:
     axes[1].xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
     axes[1].set_xlabel("Месяц")
 
-    for s, e in blocks:
-        x0 = s.to_timestamp() - pd.Timedelta(days=15)
-        x1 = e.to_timestamp() + pd.Timedelta(days=15)
-        for ax in axes:
-            ax.axvspan(x0, x1, color=ZERO_MONTH_COLOR, alpha=0.25, linewidth=0, zorder=0)
+    _shade_blocks(axes, blocks)
 
     if n_zero:
         label = (f"Месяцы без выявленного фрода: {n_zero} из {n_all} "
@@ -849,6 +915,329 @@ def volume_vs_fraud_over_time(df: pd.DataFrame) -> None:
     blocks_df.to_csv(OUTPUT_DIR / "zero_fraud_blocks.csv", index=False)
     print("  Сохранено: volume_vs_fraud_over_time.png, volume_vs_fraud_over_time.csv, "
           "zero_fraud_blocks.csv")
+
+
+# =============================================================================
+# 14. ОБЪЁМ ТРАНЗАКЦИЙ И ФРОД ПО MCC-КАТЕГОРИЯМ
+# =============================================================================
+
+def mcc_volume_vs_fraud(df: pd.DataFrame) -> None:
+    """
+    Для каждой MCC-категории: число транзакций (ось X) и число случаев фрода
+    (ось Y), обе оси логарифмические. Пунктир — ожидаемое число случаев фрода
+    при средней доле по всем транзакциям; точки выше пунктира — категории,
+    где фрода больше ожидаемого. Категории без фрода показаны на отметке «0».
+
+    Показывает то, чего не видно на графике доли фрода (STEP 8): сколько фрода
+    приходится на крупные категории и сколько — на редкие.
+    Категории с n < SMALL_N_MARK помечены пустыми маркерами.
+    """
+    print("\n[STEP 14] Объём транзакций и фрод по MCC-категориям...")
+
+    codes = (df[["mcc_description", "mcc"]].drop_duplicates()
+             .assign(mcc=lambda d: d["mcc"].astype(str))
+             .groupby("mcc_description")["mcc"].agg(lambda s: "/".join(sorted(s))))
+    g = df.groupby("mcc_description").agg(n=("is_fraud", "size"), fraud=("is_fraud", "sum"))
+    g["mcc_codes"] = codes
+
+    total_n, total_fraud = g["n"].sum(), g["fraud"].sum()
+    avg = total_fraud / total_n
+    g["fraud_rate_pct"] = g["fraud"] / g["n"] * 100
+    g["expected_fraud"] = g["n"] * avg
+    g["lift"] = g["fraud"] / g["expected_fraud"]
+    g["share_of_fraud_pct"] = g["fraud"] / total_fraud * 100
+    g["share_of_n_pct"] = g["n"] / total_n * 100
+    g["small_n"] = g["n"] < SMALL_N_MARK
+    lo, hi = wilson_ci(g["fraud"], g["n"])
+    g["ci_low_pct"], g["ci_high_pct"] = lo * 100, hi * 100
+    g = g.sort_values("fraud", ascending=False)
+
+    top5 = g.head(5)
+    risky = g[g["lift"] >= LIFT_THRESHOLD]
+    zero = g[g["fraud"] == 0]
+    print(f"  Категорий: {len(g)}; средняя доля фрода {avg:.3%}")
+    print(f"  Топ-5 по числу фрода: {top5['share_of_fraud_pct'].sum():.1f}% фрода "
+          f"на {top5['share_of_n_pct'].sum():.1f}% транзакций")
+    print(f"  Категорий с лифтом >= {LIFT_THRESHOLD:g}: {len(risky)}; в них "
+          f"{risky['share_of_fraud_pct'].sum():.1f}% фрода на {risky['share_of_n_pct'].sum():.1f}% транзакций")
+    print(f"  Категорий без фрода: {len(zero)} ({zero['n'].sum():,} транзакций)")
+
+    # ---- график ----
+    fig, ax = plt.subplots(figsize=(11, 7.2))
+    y = g["fraud"].clip(lower=0.5)
+    xmin, xmax = g["n"].min() * 0.6, g["n"].max() * 2.5
+    ymax = g["fraud"].max() * 3
+    xs = np.logspace(np.log10(xmin), np.log10(xmax), 50)
+    ax.plot(xs, xs * avg, color="#9A9A9A", lw=1, ls="--", zorder=1)
+    ax.plot(xs, xs * avg * 10, color="#9A9A9A", lw=1.4, ls=":", zorder=1)
+
+    big, small = g[~g["small_n"]], g[g["small_n"]]
+    ax.scatter(big["n"], y[big.index], s=34, color=PALETTE["legitimate"],
+               edgecolors="white", linewidths=0.8, zorder=3)
+    ax.scatter(small["n"], y[small.index], s=40, facecolors="white",
+               edgecolors=PALETTE["legitimate"], linewidths=1.6, zorder=3)
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(0.35, ymax)
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:,.0f}".replace(",", " ")))
+    decades = [10 ** k for k in range(0, int(np.ceil(np.log10(ymax))) + 1) if 10 ** k <= ymax]
+    ax.set_yticks([0.5] + decades)
+    ax.set_yticklabels(["0"] + [f"{d:,.0f}".replace(",", " ") for d in decades])
+    ax.yaxis.set_minor_formatter(mticker.NullFormatter())
+    ax.grid(True, which="major", color="#e6e6e6", lw=0.6)
+    ax.set_axisbelow(True)
+    ax.set_xlabel("Транзакций в категории (логарифмическая шкала)")
+    ax.set_ylabel("Случаев фрода в категории (логарифмическая шкала)")
+    ax.set_title(f"Объём транзакций и фрод по MCC-категориям ({len(g)} категорий)", loc="left")
+
+    from matplotlib.lines import Line2D
+    ax.legend(handles=[
+        Line2D([], [], color="#9A9A9A", ls="--", lw=1, label=f"ожидаемый фрод при средней доле {avg:.2%}"),
+        Line2D([], [], color="#9A9A9A", ls=":", lw=1.4, label="при доле в 10 раз выше средней"),
+        Line2D([], [], marker="o", ls="", color=PALETTE["legitimate"], markeredgecolor="white",
+               label=f"категория, n ≥ {SMALL_N_MARK}"),
+        Line2D([], [], marker="o", ls="", markerfacecolor="white", markeredgecolor=PALETTE["legitimate"],
+               markeredgewidth=1.6, label=f"n < {SMALL_N_MARK} (широкий доверительный интервал)"),
+    ], loc="upper left", frameon=False, fontsize=9)
+
+    # Подписи: крупнейшие по числу фрода + самые «перекошенные» редкие и крупные
+    pick = list(g.head(6).index)
+    pick += list(g[g["small_n"]].sort_values("lift", ascending=False).head(3).index)
+    pick += list(g[~g["small_n"]].sort_values("lift", ascending=False).head(3).index)
+    pick = list(dict.fromkeys(pick))
+    _annotate_no_overlap(ax, [(g.loc[nm, "n"], y[nm], _short(nm)) for nm in pick])
+
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "mcc_volume_vs_fraud.png")
+    plt.close()
+
+    cols = ["mcc_codes", "n", "fraud", "fraud_rate_pct", "ci_low_pct", "ci_high_pct", "lift",
+            "expected_fraud", "share_of_fraud_pct", "share_of_n_pct", "small_n"]
+    g[cols].to_csv(OUTPUT_DIR / "mcc_volume_vs_fraud.csv")
+    print("  Сохранено: mcc_volume_vs_fraud.png, mcc_volume_vs_fraud.csv")
+
+
+# =============================================================================
+# 15. ПОМЕСЯЧНЫЙ ФРОД В РАЗРЕЗЕ MCC-КАТЕГОРИЙ
+# =============================================================================
+
+def mcc_fraud_over_time_stacked(df: pd.DataFrame, top_n: int = MCC_STACK_TOP_N) -> None:
+    """
+    Верхняя панель: число случаев фрода по месяцам, столбцы разбиты по MCC
+    (top_n категорий по общему числу фрода + «остальные»).
+    Нижняя панель: структура фрода по категориям (%), только для месяцев,
+    где фрода не меньше MIN_FRAUD_FOR_SHARE.
+    Серые зоны — месяцы без фрода (по всем категориям сразу).
+
+    Вопросы к графику: исчезает ли фрод в нулевых блоках во всех категориях
+    одновременно (тогда это общий эффект разметки/данных, а не динамика
+    отдельных категорий) и меняется ли структура фрода между train и test.
+    """
+    print("\n[STEP 15] Помесячный фрод в разрезе MCC-категорий...")
+
+    fr = df[df["is_fraud"] == 1]
+    top = fr["mcc_description"].value_counts().head(top_n).index.tolist()
+    cat = fr["mcc_description"].where(fr["mcc_description"].isin(top), MCC_OTHER_LABEL)
+    month = fr["date"].dt.to_period("M")
+    pivot = pd.crosstab(month, cat)
+
+    all_months = pd.period_range(df["date"].min().to_period("M"),
+                                 df["date"].max().to_period("M"), freq="M")
+    pivot = pivot.reindex(all_months, fill_value=0)
+    cols = top + ([MCC_OTHER_LABEL] if MCC_OTHER_LABEL in pivot.columns else [])
+    pivot = pivot.reindex(columns=cols, fill_value=0)
+
+    totals = pivot.sum(axis=1)
+    tx_months = set(df["date"].dt.to_period("M").unique())
+    zero_months = [p for p in pivot.index if p in tx_months and totals[p] == 0]
+    blocks = _contiguous_blocks(zero_months)
+
+    colors = {c: MCC_STACK_COLORS[i] for i, c in enumerate(top)}
+    colors[MCC_OTHER_LABEL] = MCC_OTHER_COLOR
+    ts = pivot.index.to_timestamp()
+
+    # Структура фрода: train против test
+    is_test = ts >= TEST_START_DATE
+    comp = pd.DataFrame({"train_fraud": pivot.loc[~is_test].sum(),
+                         "test_fraud": pivot.loc[is_test].sum()})
+    comp["train_share_pct"] = comp["train_fraud"] / comp["train_fraud"].sum() * 100
+    comp["test_share_pct"] = comp["test_fraud"] / comp["test_fraud"].sum() * 100
+    comp["change_pp"] = comp["test_share_pct"] - comp["train_share_pct"]
+    print("  Структура фрода по категориям, train (до 2018) и test (с 2018), %:")
+    print(comp[["train_share_pct", "test_share_pct", "change_pp"]].round(1).to_string())
+
+    # ---- график ----
+    fig, axes = plt.subplots(2, 1, figsize=(14, 9.5), sharex=True)
+
+    bottom = np.zeros(len(pivot))
+    for c in pivot.columns:
+        axes[0].bar(ts, pivot[c].values, bottom=bottom, width=20, color=colors[c],
+                    edgecolor="white", linewidth=0.4, label=_short(c, 40))
+        bottom += pivot[c].values
+    axes[0].set_title("Выявленный фрод по месяцам, разбивка по MCC-категориям", loc="left")
+    axes[0].set_ylabel("Случаев фрода в месяц")
+
+    enough = totals.values >= MIN_FRAUD_FOR_SHARE
+    shares = pivot.div(totals.replace(0, np.nan), axis=0) * 100
+    bottom = np.zeros(len(pivot))
+    for c in pivot.columns:
+        vals = np.where(enough, shares[c].fillna(0).values, 0.0)
+        axes[1].bar(ts, vals, bottom=bottom, width=20, color=colors[c],
+                    edgecolor="white", linewidth=0.4)
+        bottom += vals
+    axes[1].set_ylim(0, 100)
+    axes[1].set_title(f"Структура фрода по категориям, % (только месяцы с ≥ {MIN_FRAUD_FOR_SHARE} случаев фрода)",
+                      loc="left")
+    axes[1].set_ylabel("Доля в фроде месяца, %")
+    axes[1].xaxis.set_major_locator(mdates.YearLocator())
+    axes[1].xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    axes[1].set_xlabel("Месяц")
+
+    _shade_blocks(axes, blocks)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    if blocks:
+        handles.append(Patch(facecolor=ZERO_MONTH_COLOR, alpha=0.25))
+        labels.append("месяцы без выявленного фрода")
+    fig.legend(handles, labels, loc="lower center", ncol=4, frameon=False, fontsize=9)
+    plt.tight_layout(rect=(0, 0.09, 1, 1))
+    plt.savefig(OUTPUT_DIR / "mcc_fraud_over_time_stacked.png")
+    plt.close()
+
+    pivot.rename_axis("month").to_csv(OUTPUT_DIR / "mcc_fraud_over_time_stacked.csv")
+    comp.rename_axis("mcc_description").to_csv(OUTPUT_DIR / "mcc_fraud_share_train_vs_test.csv")
+    print("  Сохранено: mcc_fraud_over_time_stacked.png, mcc_fraud_over_time_stacked.csv, "
+          "mcc_fraud_share_train_vs_test.csv")
+
+
+# =============================================================================
+# 16. MCC И СПОСОБ ОПЛАТЫ: ОБЪЯСНЯЕТ ЛИ КАНАЛ РИСК КАТЕГОРИИ
+# =============================================================================
+
+def mcc_by_channel(df: pd.DataFrame) -> None:
+    """
+    Проверка гипотезы: «риск MCC-категории — это в основном риск онлайн-канала».
+
+    Для каждой категории считается ожидаемое число фрода двумя способами:
+      - по средней доле фрода на всех транзакциях  -> лифт без поправки;
+      - по доле фрода в каждом способе оплаты (Online / Chip / Swipe) с учётом
+        того, как операции категории распределены по способам -> лифт
+        с поправкой на канал.
+    Если лифт с поправкой заметно ниже лифта без поправки, риск категории
+    объясняется её каналом; если нет — категория рискованна и внутри канала.
+    """
+    print("\n[STEP 16] MCC и способ оплаты...")
+
+    chans = {"Online Transaction": "online", "Chip Transaction": "chip", "Swipe Transaction": "swipe"}
+    d = df[["mcc_description", "use_chip", "is_fraud"]].copy()
+    d["ch"] = d["use_chip"].map(chans)
+    d = d.dropna(subset=["ch", "mcc_description"])
+
+    rate_ch = d.groupby("ch")["is_fraud"].mean()
+    print("  Доля фрода по способам оплаты: "
+          + ", ".join(f"{c} {rate_ch[c]:.3%}" for c in chans.values() if c in rate_ch.index))
+
+    cnt = (d.groupby(["mcc_description", "ch"])
+             .agg(n=("is_fraud", "size"), fraud=("is_fraud", "sum"))
+             .unstack("ch", fill_value=0))
+    cnt.columns = [f"{a}_{b}" for a, b in cnt.columns]
+    for c in chans.values():
+        for k in ("n", "fraud"):
+            if f"{k}_{c}" not in cnt.columns:
+                cnt[f"{k}_{c}"] = 0
+
+    out = pd.DataFrame(index=cnt.index)
+    out["n"] = sum(cnt[f"n_{c}"] for c in chans.values())
+    out["fraud"] = sum(cnt[f"fraud_{c}"] for c in chans.values())
+    avg = out["fraud"].sum() / out["n"].sum()
+    out["small_n"] = out["n"] < SMALL_N_MARK
+    out["online_share_pct"] = cnt["n_online"] / out["n"] * 100
+    out["fraud_rate_pct"] = out["fraud"] / out["n"] * 100
+    n_off = cnt["n_chip"] + cnt["n_swipe"]
+    out["fraud_rate_online_pct"] = np.where(cnt["n_online"] > 0, cnt["fraud_online"] / cnt["n_online"].replace(0, np.nan) * 100, np.nan)
+    out["fraud_rate_offline_pct"] = np.where(n_off > 0, (cnt["fraud_chip"] + cnt["fraud_swipe"]) / n_off.replace(0, np.nan) * 100, np.nan)
+    exp_channel = sum(cnt[f"n_{c}"] * rate_ch.get(c, 0.0) for c in chans.values())
+    out["lift_raw"] = out["fraud"] / (out["n"] * avg)
+    out["lift_channel_adj"] = out["fraud"] / exp_channel
+    out = pd.concat([out, cnt], axis=1).sort_values("fraud", ascending=False)
+
+    total_fraud = out["fraud"].sum()
+    risky_raw = out[out["lift_raw"] >= LIFT_THRESHOLD]
+    risky_adj = out[out["lift_channel_adj"] >= LIFT_THRESHOLD]
+    rho = out["online_share_pct"].corr(out["fraud_rate_pct"], method="spearman")
+    print(f"  Корреляция Спирмена: доля Online в категории ↔ доля фрода в категории: {rho:.2f}")
+    print(f"  Категорий с лифтом >= {LIFT_THRESHOLD:g} без поправки: {len(risky_raw)} "
+          f"({risky_raw['fraud'].sum() / total_fraud:.1%} фрода)")
+    print(f"  Категорий с лифтом >= {LIFT_THRESHOLD:g} после поправки на способ оплаты: {len(risky_adj)} "
+          f"({risky_adj['fraud'].sum() / total_fraud:.1%} фрода)")
+    print(f"  Остаются рискованными после поправки из рискованных без неё: "
+          f"{len(risky_raw.index.intersection(risky_adj.index))} из {len(risky_raw)}")
+
+    # ---- график ----
+    pos = out[out["fraud"] > 0]
+    n_zero = int((out["fraud"] == 0).sum())
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6.6))
+
+    def _scatter(ax, data, xcol, ycol):
+        big, small = data[~data["small_n"]], data[data["small_n"]]
+        ax.scatter(big[xcol], big[ycol], s=34, color=PALETTE["legitimate"],
+                   edgecolors="white", linewidths=0.8, zorder=3)
+        ax.scatter(small[xcol], small[ycol], s=40, facecolors="white",
+                   edgecolors=PALETTE["legitimate"], linewidths=1.6, zorder=3)
+
+    # Левая панель: доля Online в категории и доля фрода
+    ax = axes[0]
+    _scatter(ax, pos, "online_share_pct", "fraud_rate_pct")
+    ax.axhline(avg * 100, color="#9A9A9A", lw=1, ls="--", zorder=1)
+    ax.set_yscale("log")
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:g}"))
+    ax.set_xlabel("Доля онлайн-операций в категории, %")
+    ax.set_ylabel("Доля фрода в категории, % (лог. шкала)")
+    ax.set_title("Онлайн-доля категории и доля фрода", loc="left")
+    ax.grid(True, which="major", color="#e6e6e6", lw=0.6)
+    ax.set_axisbelow(True)
+    pick = list(pos.sort_values("lift_raw", ascending=False).head(6).index)
+    pick += list(pos.sort_values("fraud", ascending=False).head(3).index)
+    _annotate_no_overlap(ax, [(pos.loc[nm, "online_share_pct"], pos.loc[nm, "fraud_rate_pct"], _short(nm, 28))
+                              for nm in dict.fromkeys(pick)])
+
+    # Правая панель: лифт без поправки и с поправкой на канал
+    ax = axes[1]
+    _scatter(ax, pos, "lift_raw", "lift_channel_adj")
+    lo = min(pos["lift_raw"].min(), pos["lift_channel_adj"].min()) * 0.7
+    hi = max(pos["lift_raw"].max(), pos["lift_channel_adj"].max()) * 1.5
+    ax.plot([lo, hi], [lo, hi], color="#9A9A9A", lw=1, ls="--", zorder=1)
+    ax.axvline(LIFT_THRESHOLD, color="#9A9A9A", lw=1, ls=":", zorder=1)
+    ax.axhline(LIFT_THRESHOLD, color="#9A9A9A", lw=1, ls=":", zorder=1)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:g}"))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:g}"))
+    ax.set_xlabel("Лифт без поправки (фрод / ожидаемый по средней доле)")
+    ax.set_ylabel("Лифт с поправкой на способ оплаты")
+    ax.set_title("Объясняется ли риск категории способом оплаты", loc="left")
+    ax.grid(True, which="major", color="#e6e6e6", lw=0.6)
+    ax.set_axisbelow(True)
+    pick = list(pos.sort_values("lift_raw", ascending=False).head(6).index)
+    pick += list(pos.sort_values("fraud", ascending=False).head(4).index)
+    _annotate_no_overlap(ax, [(pos.loc[nm, "lift_raw"], pos.loc[nm, "lift_channel_adj"], _short(nm, 28))
+                              for nm in dict.fromkeys(pick)])
+    ax.text(0.98, 0.03, "ниже диагонали — риск объясняется способом оплаты;\n"
+                        "на диагонали — категория рискованна и внутри канала",
+            transform=ax.transAxes, ha="right", va="bottom", fontsize=8.5, color="#555555")
+
+    fig.suptitle(f"MCC и способ оплаты (категорий без фрода не показано: {n_zero}; "
+                 f"пустые маркеры — n < {SMALL_N_MARK})", fontsize=12)
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "mcc_by_channel.png")
+    plt.close()
+
+    out.rename_axis("mcc_description").to_csv(OUTPUT_DIR / "mcc_by_channel.csv")
+    print("  Сохранено: mcc_by_channel.png, mcc_by_channel.csv")
 
 
 # =============================================================================
@@ -871,5 +1260,8 @@ if __name__ == "__main__":
     payment_method_over_time(df)
     mcc_risk_over_time(df)
     volume_vs_fraud_over_time(df)
+    mcc_volume_vs_fraud(df)
+    mcc_fraud_over_time_stacked(df)
+    mcc_by_channel(df)
 
     print(f"\n[DONE] Все результаты EDA сохранены в папку: {OUTPUT_DIR.resolve()}")
