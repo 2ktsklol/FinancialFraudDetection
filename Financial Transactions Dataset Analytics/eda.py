@@ -13,6 +13,8 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+import matplotlib.dates as mdates
+from matplotlib.patches import Patch
 import seaborn as sns
 import json
 from pathlib import Path
@@ -735,6 +737,121 @@ def mcc_risk_over_time(df: pd.DataFrame, top_n: int = 6, min_n: int = MIN_N_FOR_
 
 
 # =============================================================================
+# 13. ОБЪЁМ ТРАНЗАКЦИЙ И ФРОД ПО МЕСЯЦАМ (ПРОВЕРКА «НУЛЕВЫХ» МЕСЯЦЕВ)
+# =============================================================================
+
+ZERO_MONTH_COLOR = "#9A9A9A"   # заливка месяцев без выявленного фрода
+
+
+def volume_vs_fraud_over_time(df: pd.DataFrame) -> None:
+    """
+    Сопоставляет общее число транзакций и число выявленного фрода по месяцам.
+
+    Цель: показать, что в месяцы с нулевым числом фрода поток транзакций
+    НЕ пропадает (то есть ноль — не следствие отсутствия данных за месяц).
+
+    Две панели с общей осью X вместо двойной оси Y: масштабы несопоставимы
+    (десятки тысяч транзакций против сотен случаев фрода). Месяцы с fraud = 0
+    залиты серым на обеих панелях.
+
+    Важно: график показывает, что ТРАНЗАКЦИИ в таких месяцах есть, но не
+    объясняет, почему там нет фрода (реальное отсутствие или неразмеченный фрод).
+    """
+    print("\n[STEP 13] Объём транзакций и фрод по месяцам...")
+
+    month = df["date"].dt.to_period("M")
+    monthly = df.groupby(month).agg(total=("is_fraud", "count"),
+                                    fraud=("is_fraud", "sum"))
+    monthly.index = monthly.index.to_timestamp()
+    monthly["zero_fraud"] = monthly["fraud"] == 0
+
+    # Календарная полнота: есть ли месяцы без единой транзакции в данных
+    full_range = pd.date_range(monthly.index.min(), monthly.index.max(), freq="MS")
+    absent = full_range.difference(monthly.index)
+    print(f"  Месяцев в диапазоне: {len(full_range)}; "
+          f"месяцев без единой транзакции: {len(absent)}")
+
+    # Непрерывные блоки нулевых месяцев
+    zero_idx = monthly.index[monthly["zero_fraud"]]
+    blocks = []
+    if len(zero_idx):
+        periods = zero_idx.to_period("M")
+        start = prev = periods[0]
+        for p in periods[1:]:
+            if (p - prev).n != 1:
+                blocks.append((start, prev))
+                start = p
+            prev = p
+        blocks.append((start, prev))
+
+    rows = []
+    for s, e in blocks:
+        part = monthly.loc[s.to_timestamp():e.to_timestamp()]
+        rows.append({
+            "start": str(s), "end": str(e), "n_months": len(part),
+            "total_transactions": int(part["total"].sum()),
+            "mean_monthly_transactions": round(part["total"].mean()),
+            "fraud": int(part["fraud"].sum()),
+        })
+    blocks_df = pd.DataFrame(rows)
+
+    zero_m = monthly[monthly["zero_fraud"]]
+    act_m = monthly[~monthly["zero_fraud"]]
+    n_zero, n_all = len(zero_m), len(monthly)
+    if n_zero:
+        print(f"  Месяцев с fraud = 0: {n_zero} из {n_all}, блоков: {len(blocks)}")
+        print(f"  Транзакций в нулевых месяцах: медиана {zero_m['total'].median():,.0f} "
+              f"(мин {zero_m['total'].min():,}, макс {zero_m['total'].max():,}); "
+              f"всего {zero_m['total'].sum():,} ({zero_m['total'].sum() / monthly['total'].sum():.1%} всех транзакций)")
+        print(f"  Транзакций в остальных месяцах: медиана {act_m['total'].median():,.0f} "
+              f"(мин {act_m['total'].min():,}, макс {act_m['total'].max():,})")
+        print(blocks_df.to_string(index=False))
+    else:
+        print("  Месяцев с fraud = 0 нет.")
+
+    # ---- график ----
+    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True,
+                             gridspec_kw={"height_ratios": [1, 1]})
+
+    axes[0].bar(monthly.index, monthly["total"], width=20, color=PALETTE["legitimate"])
+    axes[0].set_title("Общее число транзакций по месяцам", loc="left")
+    axes[0].set_ylabel("Транзакций в месяц")
+    axes[0].set_ylim(0, monthly["total"].max() * 1.25)
+    axes[0].yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
+
+    axes[1].bar(monthly.index, monthly["fraud"], width=20, color=PALETTE["fraud"])
+    axes[1].set_title("Выявленный фрод по месяцам (is_fraud = 1)", loc="left")
+    axes[1].set_ylabel("Случаев фрода в месяц")
+    axes[1].set_ylim(0, max(monthly["fraud"].max() * 1.1, 1))
+    axes[1].xaxis.set_major_locator(mdates.YearLocator())
+    axes[1].xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    axes[1].set_xlabel("Месяц")
+
+    for s, e in blocks:
+        x0 = s.to_timestamp() - pd.Timedelta(days=15)
+        x1 = e.to_timestamp() + pd.Timedelta(days=15)
+        for ax in axes:
+            ax.axvspan(x0, x1, color=ZERO_MONTH_COLOR, alpha=0.25, linewidth=0, zorder=0)
+
+    if n_zero:
+        label = (f"Месяцы без выявленного фрода: {n_zero} из {n_all} "
+                 f"(в них в среднем {zero_m['total'].mean():,.0f} транзакций/мес, "
+                 f"в остальных {act_m['total'].mean():,.0f})")
+        axes[0].legend(handles=[Patch(facecolor=ZERO_MONTH_COLOR, alpha=0.25, label=label)],
+                       loc="upper left", frameon=False, fontsize=10)
+
+    fig.suptitle("Объём транзакций и выявленный фрод по месяцам", fontsize=13)
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "volume_vs_fraud_over_time.png")
+    plt.close()
+
+    monthly.to_csv(OUTPUT_DIR / "volume_vs_fraud_over_time.csv")
+    blocks_df.to_csv(OUTPUT_DIR / "zero_fraud_blocks.csv", index=False)
+    print("  Сохранено: volume_vs_fraud_over_time.png, volume_vs_fraud_over_time.csv, "
+          "zero_fraud_blocks.csv")
+
+
+# =============================================================================
 # ТОЧКА ВХОДА
 # =============================================================================
 
@@ -753,5 +870,6 @@ if __name__ == "__main__":
     time_patterns(df)
     payment_method_over_time(df)
     mcc_risk_over_time(df)
+    volume_vs_fraud_over_time(df)
 
     print(f"\n[DONE] Все результаты EDA сохранены в папку: {OUTPUT_DIR.resolve()}")
