@@ -1450,6 +1450,81 @@ def errors_vs_fraud(df: pd.DataFrame) -> None:
 
 
 # =============================================================================
+# 18. ПРОВЕРКА СТАТИЧНОСТИ АТРИБУТОВ КЛИЕНТОВ И КАРТ
+# =============================================================================
+
+def _month_year_to_ts(series: pd.Series) -> pd.Series:
+    """'MM/YYYY' -> Timestamp начала месяца. Парсятся только уникальные значения."""
+    mapping = {u: pd.to_datetime(u, format="%m/%Y", errors="coerce") for u in series.dropna().unique()}
+    return series.map(mapping)
+
+
+def static_attributes_check(df: pd.DataFrame) -> None:
+    """
+    Проверяет, что атрибуты клиентов и карт — это один снимок, а не данные на
+    момент транзакции.
+
+    В users_data.csv одна строка на клиента, в cards_data.csv — одна на карту,
+    поэтому после объединения каждому клиенту (карте) во всех его транзакциях
+    присваивается одно и то же значение. Проверяется:
+      - уникальность ключей и согласованность таблиц;
+      - на какой год указан возраст (current_age + birth_year);
+      - совпадает ли num_credit_cards с реальным числом карт клиента;
+      - что хранится ровно по одному значению возраста на клиента;
+      - доля транзакций до открытия счёта карты и после окончания её срока.
+    """
+    print("\n[STEP 18] Проверка статичности атрибутов клиентов и карт...")
+    users = pd.read_csv(USERS_PATH)
+    cards = pd.read_csv(CARDS_PATH)
+    rows = []
+
+    def add(check, value, note=""):
+        rows.append({"check": check, "value": value, "note": note})
+        print(f"  {check}: {value}" + (f"  ({note})" if note else ""))
+
+    # 1. Ключи
+    add("users: строк / уникальных id", f"{len(users)} / {users['id'].nunique()}",
+        "одна строка на клиента" if users["id"].is_unique else "ЕСТЬ ДУБЛИ id")
+    add("cards: строк / уникальных id", f"{len(cards)} / {cards['id'].nunique()}",
+        "одна строка на карту" if cards["id"].is_unique else "ЕСТЬ ДУБЛИ id")
+    add("cards.client_id отсутствует в users", int((~cards["client_id"].isin(users["id"])).sum()))
+
+    # 2. На какой год указан возраст
+    snap = (users["current_age"] + users["birth_year"]).value_counts().sort_index()
+    shown = ", ".join(f"{int(k)}: {int(v)}" for k, v in snap.head(10).items()) + (" …" if len(snap) > 10 else "")
+    add("current_age + birth_year (значение: клиентов)", shown, "это год, на который указан возраст")
+    snap_year = int(snap.idxmax())
+
+    # 3. num_credit_cards против реального числа карт
+    real = cards.groupby("client_id").size().reindex(users["id"]).fillna(0).to_numpy()
+    add("num_credit_cards == число карт клиента в cards", f"{(users['num_credit_cards'].to_numpy() == real).mean():.1%} клиентов")
+
+    # 4. В объединённом наборе: одно значение возраста на клиента
+    max_distinct = int(df.groupby("client_id")["user_current_age"].nunique().max())
+    add("макс. число различных значений current_age у одного клиента в транзакциях", max_distinct)
+
+    # 5. Возраст на момент транзакции и снимок
+    tx_year = df["date"].dt.year
+    gap = snap_year - tx_year
+    add(f"разница между годом снимка ({snap_year}) и годом транзакции, лет",
+        f"среднее {gap.mean():.1f}, максимум {int(gap.max())}",
+        "насколько значение current_age отличается от возраста на момент транзакции")
+    add("транзакций, где снимок «из будущего» на 5 и более лет", f"{(gap >= 5).mean():.1%}")
+
+    # 6. Транзакции до открытия счёта и после окончания срока карты
+    if {"card_acct_open_date", "card_expires"}.issubset(df.columns):
+        open_ts = _month_year_to_ts(df["card_acct_open_date"])
+        exp_end = _month_year_to_ts(df["card_expires"]) + pd.offsets.MonthEnd(0) + pd.Timedelta(days=1)
+        n_before = int((df["date"] < open_ts).sum())
+        n_after = int((df["date"] >= exp_end).sum())
+        add("транзакций до месяца открытия счёта карты", f"{n_before:,} ({n_before / len(df):.2%})")
+        add("транзакций после окончания срока действия карты", f"{n_after:,} ({n_after / len(df):.2%})")
+
+    pd.DataFrame(rows).to_csv(OUTPUT_DIR / "static_attributes_check.csv", index=False)
+    print("  Сохранено: static_attributes_check.csv")
+
+
+# =============================================================================
 # ТОЧКА ВХОДА
 # =============================================================================
 
@@ -1473,5 +1548,6 @@ if __name__ == "__main__":
     mcc_fraud_over_time_stacked(df)
     mcc_by_channel(df)
     errors_vs_fraud(df)
+    static_attributes_check(df)
 
     print(f"\n[DONE] Все результаты EDA сохранены в папку: {OUTPUT_DIR.resolve()}")
