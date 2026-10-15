@@ -1241,6 +1241,215 @@ def mcc_by_channel(df: pd.DataFrame) -> None:
 
 
 # =============================================================================
+# 17. ПРИЗНАК errors И ФРОД
+# =============================================================================
+
+NO_ERROR_LABEL = "(нет ошибки)"
+
+
+def _rate_table(d: pd.DataFrame, by, avg: float, total_fraud: float) -> pd.DataFrame:
+    """Группировка: n, fraud, доля фрода (%), CI Уилсона (%), lift к средней, доля всего фрода."""
+    t = d.groupby(by).agg(n=("is_fraud", "size"), fraud=("is_fraud", "sum"))
+    lo, hi = wilson_ci(t["fraud"], t["n"])
+    t["fraud_rate_pct"] = t["fraud"] / t["n"] * 100
+    t["ci_low_pct"] = np.clip(lo * 100, 0, None)
+    t["ci_high_pct"] = hi * 100
+    t["lift"] = t["fraud_rate_pct"] / (avg * 100)
+    t["share_of_fraud_pct"] = t["fraud"] / total_fraud * 100
+    t["small_n"] = t["n"] < SMALL_N_MARK
+    return t
+
+
+def errors_vs_fraud(df: pd.DataFrame) -> None:
+    """
+    Связь признака errors с фродом.
+
+    Пропуск в errors означает «ошибки не было», а не потерю данных, поэтому
+    записи без ошибки образуют базовую группу. Значение errors может быть
+    составным (несколько ошибок через запятую): считаем и по строке целиком,
+    и по отдельным типам ошибок (запись с двумя ошибками входит в оба типа).
+
+    Проверяется:
+      - уровень фрода у записей с ошибкой и без неё;
+      - уровень фрода по значениям и по типам ошибок (CI Уилсона, lift);
+      - те же значения в разрезе способа оплаты (ошибка может быть просто
+        признаком канала, а не самостоятельным сигналом);
+      - стабильность по годам и наличие ошибок в месяцах без фрода.
+    """
+    print("\n[STEP 17] Признак errors и фрод...")
+
+    if "errors" not in df.columns:
+        print("  Столбца errors нет — шаг пропущен.")
+        return
+
+    chans = {"Online Transaction": "online", "Chip Transaction": "chip", "Swipe Transaction": "swipe"}
+    d = df[["date", "errors", "use_chip", "is_fraud"]].copy()
+    d["has_error"] = d["errors"].notna()
+    d["err_raw"] = d["errors"].fillna(NO_ERROR_LABEL).astype(str).str.strip()
+    d["ch"] = d["use_chip"].map(chans)
+    d["year"] = d["date"].dt.year
+
+    n_all = len(d)
+    n_err = int(d["has_error"].sum())
+    if n_err == 0:
+        print("  Непустых значений errors нет — шаг пропущен.")
+        return
+
+    total_fraud = float(d["is_fraud"].sum())
+    avg = total_fraud / n_all
+
+    # ---- 1. С ошибкой и без ошибки ----
+    grp = _rate_table(d, "has_error", avg, total_fraud)
+    r_no, r_yes = grp.loc[False, "fraud_rate_pct"], grp.loc[True, "fraud_rate_pct"]
+    print(f"  Записей с ошибкой: {n_err:,} ({n_err / n_all:.2%}); без ошибки: {n_all - n_err:,}")
+    print(f"  Доля фрода без ошибки: {r_no:.3f}% "
+          f"[{grp.loc[False, 'ci_low_pct']:.3f}; {grp.loc[False, 'ci_high_pct']:.3f}]")
+    print(f"  Доля фрода с ошибкой : {r_yes:.3f}% "
+          f"[{grp.loc[True, 'ci_low_pct']:.3f}; {grp.loc[True, 'ci_high_pct']:.3f}] "
+          f"(фрода всего {int(grp.loc[True, 'fraud']):,}, "
+          f"{grp.loc[True, 'share_of_fraud_pct']:.2f}% от всего фрода)")
+    grp.rename(index={False: "без ошибки", True: "с ошибкой"}).rename_axis("group") \
+       .to_csv(OUTPUT_DIR / "errors_fraud_overall.csv")
+
+    # ---- 2. По значениям (строка целиком) и по типам ошибок ----
+    by_value = _rate_table(d, "err_raw", avg, total_fraud).sort_values("n", ascending=False)
+    by_value.rename_axis("errors").to_csv(OUTPUT_DIR / "errors_fraud_by_value.csv")
+
+    comp = d.loc[d["has_error"], ["err_raw", "ch", "year", "is_fraud"]].copy()
+    comp["error_type"] = comp["err_raw"].str.split(",")
+    comp = comp.explode("error_type")
+    comp["error_type"] = comp["error_type"].str.strip()
+    n_multi = int(d.loc[d["has_error"], "err_raw"].str.contains(",").sum())
+    by_type = _rate_table(comp, "error_type", avg, total_fraud).sort_values("n", ascending=False)
+    by_type.rename_axis("error_type").to_csv(OUTPUT_DIR / "errors_fraud_by_type.csv")
+
+    print(f"  Уникальных значений: {d.loc[d['has_error'], 'err_raw'].nunique()}; "
+          f"составных (несколько ошибок): {n_multi:,} записей; "
+          f"отдельных типов ошибок: {len(by_type)}")
+    print(f"  Средняя доля фрода по датасету: {avg * 100:.3f}%")
+    print("  Типы ошибок (по числу записей):")
+    show = by_type.head(12)
+    for name, r in show.iterrows():
+        mark = "*" if r["small_n"] else " "
+        print(f"   {mark}{name:<28} n={int(r['n']):>8,}  фрод={int(r['fraud']):>6,}  "
+              f"{r['fraud_rate_pct']:6.3f}% [{r['ci_low_pct']:.3f}; {r['ci_high_pct']:.3f}]  lift={r['lift']:.2f}")
+    sig = by_type[by_type["ci_low_pct"] > avg * 100]
+    print(f"  Типов ошибок, у которых нижняя граница CI выше средней доли фрода: {len(sig)}"
+          + (f" -> {', '.join(sig.index)}" if len(sig) else ""))
+    print("  (* — n < %d; запись с несколькими ошибками учтена в каждом типе)" % SMALL_N_MARK)
+
+    # ---- 3. В разрезе способа оплаты ----
+    noerr = d[~d["has_error"]].dropna(subset=["ch"])
+    noerr_rate = noerr.groupby("ch")["is_fraud"].mean() * 100
+    witherr = d[d["has_error"]].dropna(subset=["ch"])
+    print("  По способам оплаты (доля фрода, %): без ошибки / с ошибкой (n с ошибкой)")
+    for c in chans.values():
+        w = witherr[witherr["ch"] == c]
+        if len(w):
+            print(f"    {c:<7} {noerr_rate.get(c, float('nan')):6.3f} / {w['is_fraud'].mean() * 100:6.3f}  (n={len(w):,})")
+        else:
+            print(f"    {c:<7} {noerr_rate.get(c, float('nan')):6.3f} / —  (ошибок нет)")
+
+    by_ch = _rate_table(comp.dropna(subset=["ch"]), ["error_type", "ch"], avg, total_fraud)
+    by_ch["noerr_rate_same_channel_pct"] = by_ch.index.get_level_values("ch").map(noerr_rate)
+    by_ch["lift_vs_noerr_same_channel"] = np.where(
+        by_ch["noerr_rate_same_channel_pct"] > 0,
+        by_ch["fraud_rate_pct"] / by_ch["noerr_rate_same_channel_pct"], np.nan)
+    by_ch.to_csv(OUTPUT_DIR / "errors_fraud_by_channel.csv")
+
+    # ---- 4. По годам и месяцы без фрода ----
+    all_years = sorted(d["year"].dropna().unique())
+    y_err = _rate_table(d[d["has_error"]], "year", avg, total_fraud).reindex(all_years)
+    y_no = _rate_table(d[~d["has_error"]], "year", avg, total_fraud).reindex(all_years)
+    yearly = pd.DataFrame({
+        "n_error": y_err["n"].fillna(0).astype(int), "fraud_error": y_err["fraud"].fillna(0).astype(int),
+        "rate_error_pct": y_err["fraud_rate_pct"], "ci_low_error_pct": y_err["ci_low_pct"],
+        "ci_high_error_pct": y_err["ci_high_pct"],
+        "n_no_error": y_no["n"].fillna(0).astype(int), "fraud_no_error": y_no["fraud"].fillna(0).astype(int),
+        "rate_no_error_pct": y_no["fraud_rate_pct"],
+    })
+    yearly["share_with_error_pct"] = yearly["n_error"] / (yearly["n_error"] + yearly["n_no_error"]) * 100
+    yearly.rename_axis("year").to_csv(OUTPUT_DIR / "errors_fraud_by_year.csv")
+
+    month = d["date"].dt.to_period("M")
+    fraud_by_month = d.groupby(month)["is_fraud"].sum()
+    zero_months = fraud_by_month[fraud_by_month == 0].index
+    in_zero = month.isin(zero_months)
+    print(f"  Месяцев без фрода: {len(zero_months)}; доля всех записей в них: {in_zero.mean():.1%}; "
+          f"доля записей с ошибкой в них: {in_zero[d['has_error']].mean():.1%}")
+    print("  Доля фрода с ошибкой / без ошибки по годам: "
+          + "; ".join(f"{int(y)}: "
+                      + (f"{r['rate_error_pct']:.3f}" if r["n_error"] > 0 else "—")
+                      + f" / {r['rate_no_error_pct']:.3f}"
+                      for y, r in yearly.iterrows()))
+
+    # ---- график ----
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6.8), gridspec_kw={"width_ratios": [1.25, 1]})
+
+    # Левая панель: доля фрода по типам ошибок, доверительные интервалы
+    ax = axes[0]
+    t = by_type.sort_values("fraud_rate_pct", ascending=True)
+    ypos = np.arange(len(t))
+    xerr = np.vstack([(t["fraud_rate_pct"] - t["ci_low_pct"]).clip(lower=0),
+                      (t["ci_high_pct"] - t["fraud_rate_pct"]).clip(lower=0)])
+    ax.errorbar(t["fraud_rate_pct"], ypos, xerr=xerr, fmt="none",
+                ecolor="#9A9A9A", elinewidth=1.2, capsize=2.5, zorder=2)
+    big, small = ~t["small_n"].values, t["small_n"].values
+    ax.scatter(t["fraud_rate_pct"][big], ypos[big], s=46, color=PALETTE["fraud"],
+               edgecolors="white", linewidths=0.8, zorder=3)
+    ax.scatter(t["fraud_rate_pct"][small], ypos[small], s=50, facecolors="white",
+               edgecolors=PALETTE["fraud"], linewidths=1.6, zorder=3)
+    ax.axvline(r_no, color=PALETTE["legitimate"], lw=1.4, ls="--", zorder=1,
+               label=f"Записи без ошибки: {r_no:.3f}%")
+    ax.axvline(avg * 100, color="#9A9A9A", lw=1.2, ls=":", zorder=1,
+               label=f"Среднее по датасету: {avg * 100:.3f}%")
+    ax.set_yticks(ypos)
+    ax.set_yticklabels([f"{_short(nm, 30)}  (n={int(n):,})" for nm, n in zip(t.index, t["n"])], fontsize=9)
+    # symlog: ниже 0.05% шкала линейная (там помещается ноль), выше — логарифмическая,
+    # чтобы один экстремальный тип ошибки не сжимал остальные в точку
+    ax.set_xscale("symlog", linthresh=0.05, linscale=0.5)
+    xmax = max(t["ci_high_pct"].max(), r_no, avg * 100) * 1.3
+    ax.set_xlim(0, xmax)
+    ticks = [v for v in (0, 0.05, 0.1, 0.3, 1, 3, 10, 30, 100) if v <= xmax]
+    ax.set_xticks(ticks)
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:g}"))
+    ax.set_xlabel("Доля фрода, % (шкала symlog; отрезок — 95% CI Уилсона)")
+    ax.set_title("Доля фрода по типам ошибок", loc="left")
+    ax.grid(True, axis="x", color="#e6e6e6", lw=0.6)
+    ax.set_axisbelow(True)
+    ax.legend(loc="upper left", fontsize=9, frameon=False)
+
+    # Правая панель: по годам — с ошибкой и без ошибки
+    ax = axes[1]
+    xs = np.arange(len(all_years))
+    ax.plot(xs, yearly["rate_no_error_pct"], color=PALETTE["legitimate"], lw=2, marker="o", ms=5,
+            label="Записи без ошибки", zorder=3)
+    ok = yearly["n_error"] > 0
+    yerr = np.vstack([(yearly["rate_error_pct"] - yearly["ci_low_error_pct"]).clip(lower=0).fillna(0),
+                      (yearly["ci_high_error_pct"] - yearly["rate_error_pct"]).clip(lower=0).fillna(0)])
+    ax.errorbar(xs[ok.values], yearly["rate_error_pct"][ok].values,
+                yerr=yerr[:, ok.values], color=PALETTE["fraud"], lw=2, marker="o", ms=5,
+                capsize=2.5, elinewidth=1.2, label="Записи с ошибкой", zorder=3)
+    ax.set_xticks(xs)
+    ax.set_xticklabels([f"{int(y)}\n{n / 1000:.1f} тыс." for y, n in zip(all_years, yearly["n_error"])], fontsize=8)
+    ax.set_ylim(bottom=0)
+    ax.set_xlabel("Год (под годом — число записей с ошибкой)")
+    ax.set_ylabel("Доля фрода, %")
+    ax.set_title("Доля фрода по годам", loc="left")
+    ax.grid(True, axis="y", color="#e6e6e6", lw=0.6)
+    ax.set_axisbelow(True)
+    ax.legend(loc="upper right", fontsize=9, frameon=False)
+
+    fig.suptitle(f"Признак errors и фрод (пустые маркеры — n < {SMALL_N_MARK})", fontsize=12)
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "errors_vs_fraud.png")
+    plt.close()
+
+    print("  Сохранено: errors_vs_fraud.png, errors_fraud_overall.csv, errors_fraud_by_value.csv, "
+          "errors_fraud_by_type.csv, errors_fraud_by_channel.csv, errors_fraud_by_year.csv")
+
+
+# =============================================================================
 # ТОЧКА ВХОДА
 # =============================================================================
 
@@ -1263,5 +1472,6 @@ if __name__ == "__main__":
     mcc_volume_vs_fraud(df)
     mcc_fraud_over_time_stacked(df)
     mcc_by_channel(df)
+    errors_vs_fraud(df)
 
     print(f"\n[DONE] Все результаты EDA сохранены в папку: {OUTPUT_DIR.resolve()}")
