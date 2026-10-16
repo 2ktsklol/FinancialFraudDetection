@@ -1525,6 +1525,506 @@ def static_attributes_check(df: pd.DataFrame) -> None:
 
 
 # =============================================================================
+# 19. ВОЗРАСТ КЛИЕНТА И ФРОД
+# =============================================================================
+
+# Возрастные группы: левая граница включена, правая нет ([0, 25), [25, 35), ...).
+AGE_BINS = [0, 25, 35, 45, 55, 65, 200]
+AGE_LABELS = ["<25", "25–34", "35–44", "45–54", "55–64", "65+"]
+
+
+def _age_at_transaction(df: pd.DataFrame) -> pd.Series:
+    """
+    Полных лет клиента на дату транзакции: год транзакции - год рождения, минус
+    один год, если день рождения в этом году ещё не наступил (учитывается месяц).
+
+    user_current_age использовать нельзя: это возраст на момент выгрузки датасета
+    (current_age + birth_year = 2019/2020, см. STEP 18), для старых транзакций он
+    завышен. birth_year - реальный факт и от даты транзакции не зависит.
+    """
+    tx_year = df["date"].dt.year
+    tx_month = df["date"].dt.month
+    return tx_year - df["user_birth_year"] - (tx_month < df["user_birth_month"]).astype(int)
+
+
+def age_vs_fraud(df: pd.DataFrame) -> None:
+    """
+    Гипотеза: основная часть фрода приходится на клиентов определённого возраста.
+
+    Возраст считается на момент транзакции. Для каждой возрастной группы:
+      - доля всех транзакций и доля всего фрода (если они близки, возраст фрод
+        не различает; гипотеза «основная часть фрода» относится именно к доле фрода);
+      - fraud rate и lift относительно общего fraud rate;
+      - fraud rate по годам (стабильность эффекта во времени).
+    Отдельно проверяется концентрация фрода на небольшом числе клиентов: иначе
+    «возрастной эффект» может оказаться несколькими пострадавшими клиентами.
+    """
+    print("\n[STEP 19] Фрод и возраст клиента на момент транзакции...")
+
+    if not {"user_birth_year", "user_birth_month"}.issubset(df.columns):
+        print("  [WARN] нет столбцов user_birth_year / user_birth_month — шаг пропущен")
+        return
+
+    age = _age_at_transaction(df)
+    valid = age.notna()
+    group = pd.cut(age, bins=AGE_BINS, labels=AGE_LABELS, right=False)
+    y = df["is_fraud"]
+
+    total_n = int(valid.sum())
+    total_fraud = int(y[valid].sum())
+    overall_rate = total_fraud / total_n
+
+    rows = []
+
+    def add(check, value, note=""):
+        rows.append({"check": check, "value": value, "note": note})
+        print(f"  {check}: {value}" + (f"  ({note})" if note else ""))
+
+    # --- Контроль расчёта возраста ---
+    add("транзакций с известным возрастом", f"{total_n:,} из {len(df):,}")
+    add("возраст на момент транзакции: мин / медиана / макс",
+        f"{age.min():.0f} / {age.median():.0f} / {age.max():.0f}")
+    n_minor = int((age < 18).sum())
+    add("транзакций при возрасте клиента младше 18 лет", f"{n_minor:,} ({n_minor / total_n:.2%})",
+        "возраст рассчитан по birth_year, user_current_age не используется")
+    if "user_current_age" in df.columns:
+        diff = df["user_current_age"] - age
+        add("user_current_age минус возраст на момент транзакции, лет",
+            f"среднее {diff.mean():.1f}, максимум {diff.max():.0f}",
+            "насколько user_current_age завышает возраст")
+
+    # --- Таблица по возрастным группам ---
+    tab = (
+        pd.DataFrame({"age_group": group[valid], "is_fraud": y[valid]})
+        .groupby("age_group", observed=False)["is_fraud"]
+        .agg(fraud="sum", n="count")
+        .reset_index()
+    )
+    tab["age_group"] = tab["age_group"].astype(str)
+    tab["share_tx"] = tab["n"] / tab["n"].sum()
+    tab["share_fraud"] = tab["fraud"] / tab["fraud"].sum()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        tab["fraud_rate"] = tab["fraud"] / tab["n"]
+        tab["lift"] = tab["fraud_rate"] / overall_rate
+        tab["ci_low"], tab["ci_high"] = wilson_ci(tab["fraud"], tab["n"])
+    tab["ci_low"] = tab["ci_low"].clip(lower=0)
+    tab.to_csv(OUTPUT_DIR / "age_fraud_by_group.csv", index=False)
+
+    print(f"\n  Общий fraud rate: {overall_rate:.4%}")
+    print(f"  {'группа':<8}{'транзакций':>13}{'доля tx':>9}{'фрод':>8}{'доля фрода':>12}{'fraud rate':>12}{'lift':>7}")
+    for _, r in tab.iterrows():
+        print(f"  {r['age_group']:<8}{int(r['n']):>13,}{r['share_tx']:>9.1%}{int(r['fraud']):>8,}"
+              f"{r['share_fraud']:>12.1%}{r['fraud_rate']:>12.4%}{r['lift']:>7.2f}")
+
+    # --- Fraud rate по годам ---
+    by_year = (
+        pd.DataFrame({"year": df["date"].dt.year[valid], "age_group": group[valid], "is_fraud": y[valid]})
+        .groupby(["year", "age_group"], observed=False)["is_fraud"]
+        .agg(fraud="sum", n="count")
+        .reset_index()
+    )
+    by_year["age_group"] = by_year["age_group"].astype(str)
+    by_year["fraud_rate"] = by_year["fraud"] / by_year["n"].replace(0, np.nan)
+    by_year.to_csv(OUTPUT_DIR / "age_fraud_by_group_year.csv", index=False)
+
+    # --- Концентрация фрода на клиентах ---
+    per_client = (
+        df.groupby("client_id")["is_fraud"].agg(fraud="sum", n="count")
+        .sort_values(["fraud", "n"], ascending=[False, True])
+    )
+    n_clients = len(per_client)
+    c_fraud = per_client["fraud"].to_numpy()
+    c_n = per_client["n"].to_numpy()
+    cum_clients = np.arange(1, n_clients + 1) / n_clients
+    cum_fraud = np.cumsum(c_fraud) / c_fraud.sum()
+    cum_tx = np.cumsum(c_n) / c_n.sum()
+
+    n_with_fraud = int((c_fraud > 0).sum())
+    add("клиентов всего / с хотя бы одним фродом", f"{n_clients:,} / {n_with_fraud:,} ({n_with_fraud / n_clients:.1%})")
+    add("клиентов с 5 и более фродами", f"{int((c_fraud >= 5).sum()):,}")
+    for pct in (1, 5, 10):
+        k = max(1, int(round(n_clients * pct / 100)))
+        add(f"топ-{pct}% клиентов по числу фродов ({k} клиентов): доля фрода / доля транзакций",
+            f"{cum_fraud[k - 1]:.1%} / {cum_tx[k - 1]:.1%}")
+    pd.DataFrame(rows).to_csv(OUTPUT_DIR / "age_fraud_checks.csv", index=False)
+
+    # --- График ---
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    x = np.arange(len(tab))
+
+    ax = axes[0, 0]
+    w = 0.38
+    ax.bar(x - w / 2, tab["share_tx"] * 100, w, color=PALETTE["legitimate"], label="доля всех транзакций")
+    ax.bar(x + w / 2, tab["share_fraud"] * 100, w, color=PALETTE["fraud"], label="доля всего фрода")
+    ax.set_xticks(x)
+    ax.set_xticklabels(tab["age_group"])
+    ax.set_xlabel("Возраст на момент транзакции, лет")
+    ax.set_ylabel("%")
+    ax.set_title("Доля транзакций и доля фрода по возрастным группам")
+    ax.legend(frameon=False)
+    ax.yaxis.grid(True, alpha=0.3)
+    ax.set_axisbelow(True)
+
+    ax = axes[0, 1]
+    ax.bar(x, tab["fraud_rate"] * 100, color="#8C8C8C")
+    ax.axhline(overall_rate * 100, color="black", linestyle="--", linewidth=1,
+               label=f"общий fraud rate {overall_rate:.3%}")
+    for xi, (rate, lift) in enumerate(zip(tab["fraud_rate"], tab["lift"])):
+        if np.isfinite(rate):
+            ax.text(xi, rate * 100, f"×{lift:.2f}", ha="center", va="bottom", fontsize=9)
+    ax.set_xticks(x)
+    ax.set_xticklabels(tab["age_group"])
+    ax.set_xlabel("Возраст на момент транзакции, лет")
+    ax.set_ylabel("Fraud rate, %")
+    ax.set_title("Fraud rate по возрастным группам (подпись — lift к общему)")
+    ax.set_ylim(0, np.nanmax(tab["fraud_rate"]) * 100 * 1.3)
+    ax.legend(frameon=False, loc="upper left")
+    ax.yaxis.grid(True, alpha=0.3)
+    ax.set_axisbelow(True)
+
+    ax = axes[1, 0]
+    colors = plt.cm.viridis(np.linspace(0.05, 0.9, len(AGE_LABELS)))
+    for color, lab in zip(colors, AGE_LABELS):
+        sub = by_year[(by_year["age_group"] == lab) & (by_year["n"] > 0)]
+        ax.plot(sub["year"], sub["fraud_rate"] * 100, marker="o", markersize=4, color=color, label=lab)
+    ax.axhline(overall_rate * 100, color="black", linestyle="--", linewidth=1)
+    ax.set_xlabel("Год транзакции")
+    ax.set_ylabel("Fraud rate, %")
+    ax.set_title("Fraud rate возрастных групп по годам")
+    ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
+    ax.legend(title="возраст", frameon=False, ncol=2, fontsize=9)
+    ax.yaxis.grid(True, alpha=0.3)
+    ax.set_axisbelow(True)
+
+    ax = axes[1, 1]
+    ax.plot(cum_clients * 100, cum_fraud * 100, color=PALETTE["fraud"], label="доля фрода")
+    ax.plot(cum_clients * 100, cum_tx * 100, color=PALETTE["legitimate"], label="доля транзакций тех же клиентов")
+    ax.plot([0, 100], [0, 100], color="gray", linestyle=":", label="равномерное распределение")
+    ax.set_xlabel("Клиенты, упорядоченные по числу фродов, % от всех клиентов")
+    ax.set_ylabel("Накопленная доля, %")
+    ax.set_title("Концентрация фрода на клиентах")
+    ax.legend(frameon=False, loc="lower right")
+    ax.grid(True, alpha=0.3)
+
+    fig.suptitle("Возраст клиента (на момент транзакции) и фрод", fontsize=13)
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "age_vs_fraud.png")
+    plt.close()
+
+    print("  Сохранено: age_vs_fraud.png, age_fraud_by_group.csv, age_fraud_by_group_year.csv, age_fraud_checks.csv")
+
+
+# =============================================================================
+# 20. МЕРЧАНТЫ (merchant_id) И ФРОД
+# =============================================================================
+
+# Минимум транзакций у мерчанта для списка «самых рискованных» по fraud rate:
+# при общем fraud rate 0.15% у мерчанта с 20 транзакциями один фрод даёт 5%.
+MERCHANT_MIN_N = 200
+# Размеры списков «топ-K мерчантов» и доли «топ-p% мерчантов».
+MERCHANT_TOP_K = (10, 100, 1000)
+MERCHANT_TOP_PCT = (1, 5, 10)
+# Сколько мерчантов выводить в таблицу самых рискованных.
+MERCHANT_TOP_LIST = 50
+# Число розыгрышей «нулевой» модели (риск определяется только MCC).
+MERCHANT_SIM_RUNS = 200
+MERCHANT_SIM_SEED = 42
+# Календарная граница двух периодов для проверки устойчивости: период A - годы
+# до этого года, период B - начиная с него. Это не граница train/test.
+MERCHANT_PERIOD_SPLIT_YEAR = 2015
+# Интервалы числа фродов на мерчанта (левая граница включена).
+MERCHANT_FRAUD_BINS = [1, 2, 3, 4, 6, 11, 21, 51, 10**12]
+MERCHANT_FRAUD_BIN_LABELS = ["1", "2", "3", "4–5", "6–10", "11–20", "21–50", "51+"]
+
+
+def merchants_vs_fraud(df: pd.DataFrame) -> None:
+    """
+    Гипотеза: значительная часть фрода идёт в пользу одних и тех же мерчантов
+    (есть высокорискованные мерчанты). Используется только merchant_id.
+
+    Проверяется:
+      1. Концентрация: какая доля фрода приходится на топ-N мерчантов по числу
+         фродов, в сравнении с долей их транзакций.
+      2. Объясняется ли концентрация одним MCC. «Нулевая» модель: фрод
+         распределяется между мерчантами случайно, но с вероятностью, зависящей
+         только от MCC транзакции (общее число фродов то же, MERCHANT_SIM_RUNS
+         розыгрышей). Если реальная концентрация заметно выше, чем в нулевой
+         модели, у мерчантов есть собственный риск сверх MCC.
+      3. Устойчивость во времени: список мерчантов формируется по одному
+         календарному периоду, а качество оценивается на другом. Если риск не
+         сохраняется, список мерчантов не обобщается на новые данные.
+      4. Список мерчантов с наибольшим fraud rate (при объёме не менее MERCHANT_MIN_N).
+    """
+    print("\n[STEP 20] Фрод и мерчанты (merchant_id)...")
+
+    if "merchant_id" not in df.columns:
+        print("  [WARN] нет столбца merchant_id — шаг пропущен")
+        return
+
+    ok = df["merchant_id"].notna().to_numpy()
+    m, m_ids = pd.factorize(df["merchant_id"].to_numpy()[ok])
+    c, c_ids = pd.factorize(df["mcc"].to_numpy()[ok])
+    y = df["is_fraud"].to_numpy()[ok].astype(np.int64)
+    year = df["date"].dt.year.to_numpy()[ok]
+    n_m, n_c = len(m_ids), len(c_ids)
+    rng = np.random.default_rng(MERCHANT_SIM_SEED)
+
+    if not ok.all():
+        print(f"  [WARN] транзакций без merchant_id: {int((~ok).sum()):,} — исключены из шага")
+
+    def per_merchant(mask=None):
+        """Число транзакций и фродов по каждому мерчанту (в периоде, если задана маска)."""
+        mm, yy = (m, y) if mask is None else (m[mask], y[mask])
+        return np.bincount(mm, minlength=n_m), np.bincount(mm, weights=yy, minlength=n_m)
+
+    def expected_by_mcc(mask=None):
+        """Ожидаемое число фродов у каждого мерчанта, если риск задаётся только MCC."""
+        mm, cc, yy = (m, c, y) if mask is None else (m[mask], c[mask], y[mask])
+        n_by_c = np.bincount(cc, minlength=n_c)
+        f_by_c = np.bincount(cc, weights=yy, minlength=n_c)
+        p = f_by_c / np.maximum(n_by_c, 1)
+        return np.bincount(mm, weights=p[cc], minlength=n_m)
+
+    def rank_by_fraud(n_arr, f_arr):
+        """Порядок мерчантов: больше фродов - выше; при равенстве выше fraud rate."""
+        return np.lexsort((-(f_arr / np.maximum(n_arr, 1)), -f_arr))
+
+    n_all, f_all = per_merchant()
+    n_tx, F = int(n_all.sum()), int(f_all.sum())
+    exp_all = expected_by_mcc()
+    summary = []
+
+    def add(metric, value, note=""):
+        summary.append({"metric": metric, "value": value, "note": note})
+        print(f"  {metric}: {value}" + (f"  ({note})" if note else ""))
+
+    # --- Общие характеристики ---
+    n_fraud_m = int((f_all > 0).sum())
+    add("мерчантов всего", f"{n_m:,}")
+    add("транзакций на мерчанта: среднее / медиана / максимум",
+        f"{n_all.mean():.0f} / {np.median(n_all):.0f} / {int(n_all.max()):,}")
+    add("мерчантов хотя бы с одним фродом", f"{n_fraud_m:,} ({n_fraud_m / n_m:.1%})")
+    add("максимум фродов у одного мерчанта", f"{int(f_all.max())} ({f_all.max() / F:.2%} всего фрода)")
+    big = n_all >= MERCHANT_MIN_N
+    add(f"мерчантов с объёмом не менее {MERCHANT_MIN_N} транзакций",
+        f"{int(big.sum()):,} ({big.mean():.1%} мерчантов, {n_all[big].sum() / n_tx:.1%} транзакций, "
+        f"{f_all[big].sum() / F:.1%} фрода)")
+
+    # Мерчант с несколькими MCC: как часто встречается и какой MCC основной.
+    pairs = pd.Series(m.astype(np.int64) * n_c + c).value_counts()   # уже по убыванию числа транзакций
+    pairs_df = pd.DataFrame({"m": (pairs.index // n_c).to_numpy(), "c": (pairs.index % n_c).to_numpy()})
+    n_mcc_per_m = pairs_df.groupby("m").size()
+    dominant_c = pairs_df.drop_duplicates("m").set_index("m")["c"]
+    add("мерчантов, у которых встречается более одного MCC", f"{int((n_mcc_per_m > 1).sum()):,}")
+    mcc_desc = (df[["mcc", "mcc_description"]].drop_duplicates().drop_duplicates("mcc")
+                .set_index("mcc")["mcc_description"].to_dict())
+
+    # --- 1-2. Концентрация и сравнение с нулевой моделью ---
+    order = rank_by_fraud(n_all, f_all)
+    cum_f = np.cumsum(f_all[order]) / F
+    cum_n = np.cumsum(n_all[order]) / n_tx
+
+    probs = exp_all / exp_all.sum()
+    grid = np.unique(np.round(np.logspace(0, np.log10(n_m), 80)).astype(int))
+    top_k_list = [min(k, n_m) for k in MERCHANT_TOP_K]
+    top_pct_list = [max(1, int(round(n_m * p / 100))) for p in MERCHANT_TOP_PCT]
+    edges = np.array(MERCHANT_FRAUD_BINS, dtype=float)
+
+    sim_topk, sim_toppct, sim_nfraud, sim_maxf, sim_bins, sim_curve = [], [], [], [], [], []
+    for _ in range(MERCHANT_SIM_RUNS):
+        cnt = rng.multinomial(F, probs)
+        cs = np.sort(cnt)[::-1]
+        cum = np.cumsum(cs) / F
+        sim_topk.append([cum[k - 1] for k in top_k_list])
+        sim_toppct.append([cum[k - 1] for k in top_pct_list])
+        sim_nfraud.append(int((cnt > 0).sum()))
+        sim_maxf.append(int(cs[0]))
+        sim_bins.append(np.histogram(cnt[cnt > 0], bins=edges)[0])
+        sim_curve.append(cum[grid - 1])
+    sim_topk, sim_toppct = np.array(sim_topk), np.array(sim_toppct)
+    sim_nfraud, sim_maxf = np.array(sim_nfraud), np.array(sim_maxf)
+    sim_bins, sim_curve = np.array(sim_bins), np.array(sim_curve)
+
+    def q(a, p):
+        return np.percentile(a, p, axis=0)
+
+    conc_rows = []
+
+    def conc(metric, real, sim, tx_share=None, fmt="{:.1%}"):
+        lo, mean, hi = q(sim, 2.5), np.mean(sim, axis=0), q(sim, 97.5)
+        conc_rows.append({"metric": metric, "real": real, "null_mean": mean, "null_p2.5": lo,
+                          "null_p97.5": hi, "tx_share_same_merchants": tx_share})
+        extra = f", доля их транзакций {tx_share:.1%}" if tx_share is not None else ""
+        print(f"  {metric}: {fmt.format(real)}  | при риске только по MCC: {fmt.format(mean)} "
+              f"[{fmt.format(lo)}; {fmt.format(hi)}]{extra}")
+
+    print("\n  Концентрация фрода на мерчантах (реальные данные и «нулевая» модель, где риск задаётся только MCC):")
+    for i, k in enumerate(top_k_list):
+        conc(f"доля фрода у топ-{k} мерчантов", cum_f[k - 1], sim_topk[:, i], cum_n[k - 1])
+    for i, (p, k) in enumerate(zip(MERCHANT_TOP_PCT, top_pct_list)):
+        conc(f"доля фрода у топ-{p}% мерчантов ({k})", cum_f[k - 1], sim_toppct[:, i], cum_n[k - 1])
+    conc("мерчантов хотя бы с одним фродом", n_fraud_m, sim_nfraud, fmt="{:,.0f}")
+    conc("максимум фродов у одного мерчанта", int(f_all.max()), sim_maxf, fmt="{:,.0f}")
+    pd.DataFrame(conc_rows).to_csv(OUTPUT_DIR / "merchant_fraud_concentration.csv", index=False)
+
+    # --- Распределение числа фродов на мерчанта ---
+    real_bins = np.histogram(f_all[f_all > 0], bins=edges)[0]
+    bin_idx = np.digitize(f_all, edges) - 1
+    fraud_share_bin = np.bincount(bin_idx[f_all > 0], weights=f_all[f_all > 0], minlength=len(real_bins)) / F
+    dist = pd.DataFrame({
+        "fraud_per_merchant": MERCHANT_FRAUD_BIN_LABELS,
+        "merchants_real": real_bins,
+        "merchants_null_mean": sim_bins.mean(axis=0),
+        "merchants_null_p2.5": q(sim_bins, 2.5),
+        "merchants_null_p97.5": q(sim_bins, 97.5),
+        "share_of_all_fraud_real": fraud_share_bin,
+    })
+    dist.to_csv(OUTPUT_DIR / "merchant_fraud_count_distribution.csv", index=False)
+    print("\n  Число мерчантов по количеству фродов (реально / при риске только по MCC, среднее):")
+    for _, r in dist.iterrows():
+        print(f"    {r['fraud_per_merchant']:>7}: {int(r['merchants_real']):>7,} / {r['merchants_null_mean']:>9,.1f}"
+              f"   (доля всего фрода: {r['share_of_all_fraud_real']:.1%})")
+
+    # --- 3. Устойчивость во времени ---
+    split = MERCHANT_PERIOD_SPLIT_YEAR
+    y_min, y_max = int(year.min()), int(year.max())
+    period_mask = {"A": year < split, "B": year >= split}
+    period_name = {"A": f"{y_min}–{split - 1}", "B": f"{split}–{y_max}"}
+    stab = []
+    print(f"\n  Устойчивость: список формируется по одному периоду, оценивается на другом "
+          f"({period_name['A']} и {period_name['B']}).")
+    for src, dst in (("A", "B"), ("B", "A")):
+        n_s, f_s = per_merchant(period_mask[src])
+        n_d, f_d = per_merchant(period_mask[dst])
+        exp_d = expected_by_mcc(period_mask[dst])
+        overall_d = f_d.sum() / n_d.sum()
+        lists = {
+            "по числу фродов": rank_by_fraud(n_s, f_s),
+            "контроль: по объёму транзакций": np.argsort(-n_s, kind="stable"),
+        }
+        direction = f"{period_name[src]} → {period_name[dst]}"
+        for list_name, ord_ in lists.items():
+            for k in top_k_list:
+                sel = ord_[:k]
+                n_sel, f_sel, e_sel = int(n_d[sel].sum()), float(f_d[sel].sum()), float(exp_d[sel].sum())
+                rate = f_sel / n_sel if n_sel > 0 else np.nan
+                stab.append({
+                    "direction": direction, "list": list_name, "K": k,
+                    "merchants_with_fraud_in_source": int((f_s[sel] > 0).sum()),
+                    "active_in_target": int((n_d[sel] > 0).sum()),
+                    "tx_target": n_sel, "fraud_target": int(f_sel),
+                    "fraud_rate_target": rate, "overall_rate_target": overall_d,
+                    "lift_vs_overall": rate / overall_d if n_sel > 0 else np.nan,
+                    "expected_fraud_by_mcc": e_sel,
+                    "obs_to_exp_mcc": f_sel / e_sel if e_sel > 0 else np.nan,
+                })
+    stab = pd.DataFrame(stab)
+    stab.to_csv(OUTPUT_DIR / "merchant_risk_stability.csv", index=False)
+    for _, r in stab.iterrows():
+        print(f"    {r['direction']}, {r['list']}, K={r['K']}: активных {r['active_in_target']}, "
+              f"фрод {r['fraud_target']}, rate {r['fraud_rate_target']:.3%}, "
+              f"lift {r['lift_vs_overall']:.2f}, факт/ожидание по MCC {r['obs_to_exp_mcc']:.2f}")
+
+    # --- 4. Мерчанты с наибольшим fraud rate ---
+    rate_all = f_all / np.maximum(n_all, 1)
+    cand = np.flatnonzero(big)
+    top_idx = cand[np.lexsort((-f_all[cand], -rate_all[cand]))][:MERCHANT_TOP_LIST]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        lo, hi = wilson_ci(f_all[top_idx], n_all[top_idx])
+    top = pd.DataFrame({
+        "merchant_id": m_ids[top_idx],
+        "mcc": [c_ids[dominant_c[i]] for i in top_idx],
+        "mcc_description": [mcc_desc.get(c_ids[dominant_c[i]], "Unknown") for i in top_idx],
+        "n": n_all[top_idx], "fraud": f_all[top_idx].astype(int),
+        "fraud_rate": rate_all[top_idx], "ci_low": np.clip(lo, 0, None), "ci_high": hi,
+        "expected_fraud_by_mcc": exp_all[top_idx],
+        "obs_to_exp_mcc": f_all[top_idx] / np.maximum(exp_all[top_idx], 1e-12),
+    })
+    top.to_csv(OUTPUT_DIR / "merchant_top_risky.csv", index=False)
+    pd.DataFrame(summary).to_csv(OUTPUT_DIR / "merchant_summary.csv", index=False)
+
+    # --- График ---
+    fig, axes = plt.subplots(2, 2, figsize=(15, 11))
+
+    ax = axes[0, 0]
+    ax.plot(grid, np.take(cum_f, grid - 1) * 100, color=PALETTE["fraud"], label="доля фрода")
+    ax.plot(grid, np.take(cum_n, grid - 1) * 100, color=PALETTE["legitimate"], label="доля транзакций тех же мерчантов")
+    ax.plot(grid, sim_curve.mean(axis=0) * 100, color="gray", linestyle="--",
+            label="доля фрода при риске только по MCC")
+    ax.set_xscale("log")
+    ax.set_xlabel("Число мерчантов (упорядочены по числу фродов)")
+    ax.set_ylabel("Накопленная доля, %")
+    ax.set_title("Концентрация фрода на мерчантах")
+    ax.legend(frameon=False, loc="upper left")
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[0, 1]
+    xb = np.arange(len(dist))
+    w = 0.38
+    ax.bar(xb - w / 2, dist["merchants_real"], w, color=PALETTE["fraud"], label="реальные данные")
+    ax.bar(xb + w / 2, dist["merchants_null_mean"], w, color="#8C8C8C", label="риск только по MCC (среднее)")
+    ax.set_yscale("log")
+    ax.set_xticks(xb)
+    ax.set_xticklabels(dist["fraud_per_merchant"])
+    ax.set_xlabel("Число фродов у мерчанта")
+    ax.set_ylabel("Число мерчантов (лог. шкала)")
+    ax.set_title("Сколько мерчантов имеют столько фродов")
+    ax.legend(frameon=False, loc="upper left")
+    ax.yaxis.grid(True, alpha=0.3)
+    ax.set_axisbelow(True)
+
+    ax = axes[1, 0]
+    d = stab[stab["direction"] == f"{period_name['A']} → {period_name['B']}"]
+    xs = np.arange(len(top_k_list))
+    w = 0.27
+    series = [
+        ("lift к общему fraud rate, список по числу фродов",
+         d[d["list"] == "по числу фродов"].set_index("K")["lift_vs_overall"], PALETTE["fraud"]),
+        ("факт/ожидание по MCC, список по числу фродов",
+         d[d["list"] == "по числу фродов"].set_index("K")["obs_to_exp_mcc"], "#8172B3"),
+        ("lift, контроль: самые крупные по объёму",
+         d[d["list"] != "по числу фродов"].set_index("K")["lift_vs_overall"], PALETTE["legitimate"]),
+    ]
+    ymax = 1.0
+    for j, (lab, ser, color) in enumerate(series):
+        vals = ser.reindex(top_k_list).fillna(0).to_numpy()
+        ymax = max(ymax, float(vals.max()))
+        ax.bar(xs + (j - 1) * w, vals, w, color=color, label=lab)
+    ax.set_ylim(0, ymax * 1.4)
+    ax.axhline(1, color="black", linestyle="--", linewidth=1)
+    ax.set_xticks(xs)
+    ax.set_xticklabels([f"топ-{k}" for k in top_k_list])
+    ax.set_ylabel("Кратность (1 = без отличия)")
+    ax.set_title(f"Устойчивость: список по {period_name['A']}, оценка на {period_name['B']}")
+    ax.legend(frameon=False, fontsize=8)
+    ax.yaxis.grid(True, alpha=0.3)
+    ax.set_axisbelow(True)
+
+    ax = axes[1, 1]
+    show = top.head(15).iloc[::-1]
+    labels = [f"{mid} · {str(desc)[:32]} · {fr}/{nn:,}"
+              for mid, desc, fr, nn in zip(show["merchant_id"], show["mcc_description"], show["fraud"], show["n"])]
+    ax.barh(np.arange(len(show)), show["fraud_rate"] * 100, color=PALETTE["fraud"])
+    ax.set_yticks(np.arange(len(show)))
+    ax.set_yticklabels(labels, fontsize=8)
+    ax.axvline(F / n_tx * 100, color="black", linestyle="--", linewidth=1, label="общий fraud rate")
+    ax.set_xlabel("Fraud rate, %")
+    ax.set_title(f"Топ-15 мерчантов по fraud rate (объём не менее {MERCHANT_MIN_N};\n"
+                 f"подпись: id · MCC · фродов/транзакций)")
+    ax.legend(frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.12))
+    ax.xaxis.grid(True, alpha=0.3)
+    ax.set_axisbelow(True)
+
+    fig.suptitle("Мерчанты (merchant_id) и фрод", fontsize=13)
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "merchants_vs_fraud.png")
+    plt.close()
+
+    print("  Сохранено: merchants_vs_fraud.png, merchant_summary.csv, merchant_fraud_concentration.csv, "
+          "merchant_fraud_count_distribution.csv, merchant_risk_stability.csv, merchant_top_risky.csv")
+
+
+# =============================================================================
 # ТОЧКА ВХОДА
 # =============================================================================
 
@@ -1549,5 +2049,7 @@ if __name__ == "__main__":
     mcc_by_channel(df)
     errors_vs_fraud(df)
     static_attributes_check(df)
+    age_vs_fraud(df)
+    merchants_vs_fraud(df)
 
     print(f"\n[DONE] Все результаты EDA сохранены в папку: {OUTPUT_DIR.resolve()}")
